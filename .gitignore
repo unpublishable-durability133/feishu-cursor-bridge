@@ -1,12 +1,37 @@
+# Dependencies
 node_modules/
+
+# Build outputs
 dist/
+dist-bundle/
 out/
 release/
+lite/dist/
+
+# Package archives
 *.tgz
+
+# Environment & secrets
 .env
-.cursor/memory.md
+.env.*
+
+# Cursor runtime files
 .cursor/.lark-daemon.json
+.cursor/.lark-mcp.pid
 .cursor/lark-daemon.log
 .cursor/lark-daemon.log.old
 .cursor/agent-launch.log
+.cursor/memory.md
+.cursor/mcp.json
+
+# Temporary
 tmp_exec/
+*.tmp
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Editor
+*.swp
+*.swo
