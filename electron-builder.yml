@@ -51,3 +51,14 @@ mac:
 
 dmg:
   title: Feishu Cursor Bridge
+
+linux:
+  icon: resources/icon.png
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: Development
