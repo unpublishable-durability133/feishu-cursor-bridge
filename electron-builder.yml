@@ -54,6 +54,7 @@ dmg:
 
 linux:
   icon: resources/icon.png
+  maintainer: lk-eternal
   target:
     - target: AppImage
       arch:
