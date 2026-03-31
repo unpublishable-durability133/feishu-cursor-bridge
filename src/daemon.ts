@@ -261,80 +261,127 @@ async function processIncomingMessage(messageId: string, messageType: string, co
   return parts.join("\n");
 }
 
-// ── 消息队列 ─────────────────────────────────────────────
+// ── 共享文件队列 ─────────────────────────────────────────
 
-interface PollWaiter { resolve: (msg: string | null) => void; timer: NodeJS.Timeout; }
+const FILE_QUEUE_POLL_MS = 400;
+let fileQueueDir = "";
 
-const messageQueue: string[] = [];
-const pollWaiters: PollWaiter[] = [];
-const processedMessageIds = new Set<string>();
-const MAX_DEDUP_SIZE = 200;
+function initFileQueue(): void {
+  const suffix = APP_ID ? APP_ID.slice(-8) : "default";
+  fileQueueDir = path.join(os.homedir(), ".lark-bridge-mcp", `queue-${suffix}`);
+  if (!fs.existsSync(fileQueueDir)) fs.mkdirSync(fileQueueDir, { recursive: true });
+  log("INFO", `共享文件队列: ${fileQueueDir}`);
 
-function pushMessage(content: string, messageId?: string): void {
-  if (!content || !content.trim()) {
-    log("WARN", `丢弃空消息 (messageId=${messageId})`);
-    return;
-  }
+  try {
+    const now = Date.now();
+    for (const f of fs.readdirSync(fileQueueDir)) {
+      if (!f.endsWith(".claimed") && !f.endsWith(".tmp")) continue;
+      try {
+        const stat = fs.statSync(path.join(fileQueueDir, f));
+        if (now - stat.mtimeMs > 5 * 60 * 1000) fs.unlinkSync(path.join(fileQueueDir, f));
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+function pushToFileQueue(text: string, messageId?: string): boolean {
+  if (!fileQueueDir || !text?.trim()) return false;
+  const ts = Date.now();
+  const id = messageId || `${ts}-${Math.random().toString(36).slice(2, 8)}`;
+  const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+
   if (messageId) {
-    if (processedMessageIds.has(messageId)) return;
-    processedMessageIds.add(messageId);
-    if (processedMessageIds.size > MAX_DEDUP_SIZE) {
-      const first = processedMessageIds.values().next().value;
-      if (first !== undefined) processedMessageIds.delete(first);
+    try {
+      const existing = fs.readdirSync(fileQueueDir);
+      if (existing.some((f) => f.endsWith(`_${safeId}.msg`) || f.endsWith(`_${safeId}.claimed`))) return false;
+    } catch { /* ignore */ }
+  }
+
+  try {
+    const data = JSON.stringify({ text, messageId: id, timestamp: ts, source: `daemon-${process.pid}` });
+    const filename = `${ts}_${safeId}.msg`;
+    const tmpPath = path.join(fileQueueDir, filename + ".tmp");
+    const finalPath = path.join(fileQueueDir, filename);
+    fs.writeFileSync(tmpPath, data, "utf-8");
+    fs.renameSync(tmpPath, finalPath);
+    return true;
+  } catch { return false; }
+}
+
+function claimNextMessage(): string | null {
+  if (!fileQueueDir) return null;
+  let files: string[];
+  try { files = fs.readdirSync(fileQueueDir).filter((f) => f.endsWith(".msg")).sort(); } catch { return null; }
+  for (const file of files) {
+    const srcPath = path.join(fileQueueDir, file);
+    const claimedPath = srcPath.replace(/\.msg$/, ".claimed");
+    try { fs.renameSync(srcPath, claimedPath); } catch { continue; }
+    try {
+      const raw = fs.readFileSync(claimedPath, "utf-8");
+      fs.unlinkSync(claimedPath);
+      const parsed = JSON.parse(raw);
+      return typeof parsed.text === "string" ? parsed.text : raw;
+    } catch {
+      try { fs.unlinkSync(claimedPath); } catch { /* ignore */ }
+      continue;
     }
   }
-
-  log("INFO", `pushMessage: "${content.slice(0, 60)}", waiters=${pollWaiters.length}, queue=${messageQueue.length}`);
-
-  while (pollWaiters.length > 0) {
-    const waiter = pollWaiters.shift()!;
-    clearTimeout(waiter.timer);
-    waiter.resolve(content);
-    return;
-  }
-
-  messageQueue.push(content);
+  return null;
 }
 
-function drainEmptyMessages(): void {
-  while (messageQueue.length > 0 && !messageQueue[0]?.trim()) {
-    messageQueue.shift();
-  }
+function getFileQueueLength(): number {
+  if (!fileQueueDir) return 0;
+  try { return fs.readdirSync(fileQueueDir).filter((f) => f.endsWith(".msg")).length; } catch { return 0; }
 }
 
-function pullMessage(timeoutMs: number): Promise<string | null> {
-  drainEmptyMessages();
-  if (messageQueue.length > 0) {
-    const msg = messageQueue.shift()!;
-    log("INFO", `pullMessage: 从队列取出 "${msg.slice(0, 40)}", 剩余=${messageQueue.length}`);
-    return Promise.resolve(msg);
-  }
-  log("INFO", `pullMessage: 队列为空, 创建 waiter (timeout=${timeoutMs}ms)`);
+function getFileQueueMessages(): { index: number; preview: string }[] {
+  if (!fileQueueDir) return [];
+  try {
+    const files = fs.readdirSync(fileQueueDir).filter((f) => f.endsWith(".msg")).sort();
+    return files.map((f, i) => {
+      try {
+        const raw = fs.readFileSync(path.join(fileQueueDir, f), "utf-8");
+        const parsed = JSON.parse(raw);
+        return { index: i, preview: (parsed.text ?? "").slice(0, 200) };
+      } catch { return { index: i, preview: "(unreadable)" }; }
+    });
+  } catch { return []; }
+}
+
+function pollFileQueue(timeoutMs: number): Promise<string | null> {
   return new Promise((resolve) => {
-    const entry: PollWaiter = {
-      resolve,
-      timer: setTimeout(() => {
-        const idx = pollWaiters.indexOf(entry);
-        if (idx >= 0) pollWaiters.splice(idx, 1);
-        log("INFO", `pullMessage: waiter 超时 (${timeoutMs}ms), queue=${messageQueue.length}`);
-        resolve(null);
-      }, timeoutMs),
-    };
-    pollWaiters.push(entry);
+    const immediate = claimNextMessage();
+    if (immediate !== null) { resolve(immediate); return; }
+    const deadline = Date.now() + timeoutMs;
+    const timer = setInterval(() => {
+      const msg = claimNextMessage();
+      if (msg !== null) { clearInterval(timer); resolve(msg); return; }
+      if (Date.now() >= deadline) { clearInterval(timer); resolve(null); }
+    }, FILE_QUEUE_POLL_MS);
+    timer.unref();
   });
 }
 
-async function waitForReply(timeoutMs: number): Promise<string | null> {
-  const first = await pullMessage(timeoutMs);
+async function pollFileQueueBatch(timeoutMs: number): Promise<string | null> {
+  const first = await pollFileQueue(timeoutMs);
   if (first === null) return null;
   const messages = [first];
-  while (messageQueue.length > 0) {
-    const next = messageQueue[0];
-    if (!next?.trim()) { messageQueue.shift(); continue; }
-    messages.push(messageQueue.shift()!);
-  }
-  log("INFO", `waitForReply: 返回 ${messages.length} 条消息, 剩余队列=${messageQueue.length}`);
+  let extra = claimNextMessage();
+  while (extra !== null) { messages.push(extra); extra = claimNextMessage(); }
   return messages.join("\n");
+}
+
+function pushMessage(content: string, messageId?: string): void {
+  if (!content?.trim()) {
+    log("WARN", `丢弃空消息 (messageId=${messageId})`);
+    return;
+  }
+  const written = pushToFileQueue(content, messageId);
+  if (written) {
+    log("INFO", `消息已写入共享队列: "${content.slice(0, 60)}" (id=${messageId ?? "none"})`);
+  } else {
+    log("INFO", `消息已跳过（重复或写入失败）: id=${messageId ?? "none"}`);
+  }
 }
 
 let daemonPort = 0;
@@ -424,7 +471,7 @@ function startHttpServer(): Promise<number> {
             status: "ok",
             version: PKG_VERSION,
             uptime: Math.floor(process.uptime()),
-            queueLength: messageQueue.length,
+            queueLength: getFileQueueLength(),
             hasTarget: !!getSendTarget(),
             autoOpenId: autoOpenId || null,
             feishuConnected: true,
@@ -434,10 +481,8 @@ function startHttpServer(): Promise<number> {
 
         // ── 消息队列预览
         if (method === "GET" && pathname === "/queue") {
-          json(res, {
-            length: messageQueue.length,
-            messages: messageQueue.map((m, i) => ({ index: i, preview: m.slice(0, 200) })),
-          });
+          const messages = getFileQueueMessages();
+          json(res, { length: messages.length, messages });
           return;
         }
 
@@ -447,7 +492,7 @@ function startHttpServer(): Promise<number> {
             status: "ok",
             version: PKG_VERSION,
             uptime: Math.floor(process.uptime()),
-            queueLength: messageQueue.length,
+            queueLength: getFileQueueLength(),
             hasTarget: !!getSendTarget(),
             autoOpenId: autoOpenId || null,
           });
@@ -493,33 +538,33 @@ function startHttpServer(): Promise<number> {
             return;
           }
           pushMessage(content);
-          json(res, { ok: true, queueLength: messageQueue.length });
+          json(res, { ok: true, queueLength: getFileQueueLength() });
           return;
         }
 
         // ── 立即出队（供 Electron 主进程内部调用，无收集窗口）
         if (method === "GET" && pathname === "/dequeue") {
-          const msg = messageQueue.length > 0 ? messageQueue.shift()! : null;
-          json(res, { message: msg, queueLength: messageQueue.length });
+          const msg = claimNextMessage();
+          json(res, { message: msg, queueLength: getFileQueueLength() });
           return;
         }
 
-        // ── 轮询消息（供 agent curl 调用，替代原来的 /ask）
+        // ── 轮询消息（供 agent curl 调用）
         if (method === "GET" && pathname === "/poll") {
           const timeout = Number(reqUrl.searchParams.get("timeout") ?? "20000");
 
           let disconnected = false;
           req.on("close", () => { disconnected = true; });
 
-          const reply = await waitForReply(timeout);
+          const reply = await pollFileQueueBatch(timeout);
 
           if (disconnected && reply !== null) {
-            messageQueue.unshift(reply);
-            log("WARN", `/poll 连接断开，消息放回队列 (queue=${messageQueue.length})`);
+            pushToFileQueue(reply);
+            log("WARN", `/poll 连接断开，消息放回队列`);
             return;
           }
 
-          json(res, { message: reply, hasMore: messageQueue.length > 0 });
+          json(res, { message: reply, hasMore: getFileQueueLength() > 0 });
           return;
         }
 
@@ -587,6 +632,7 @@ export async function daemonMain(): Promise<void> {
   process.on("SIGTERM", cleanup);
   process.on("exit", removeLockFile);
 
+  initFileQueue();
   await initSendTarget();
   startLarkConnection();
 

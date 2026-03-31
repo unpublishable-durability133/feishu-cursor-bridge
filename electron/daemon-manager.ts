@@ -5,7 +5,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import { app, BrowserWindow, ipcMain } from "electron"
 import { getConfig, saveConfig } from "./config-store"
-import { startScheduler, stopScheduler, reloadScheduledTasks, setSchedulerLogger, setPortGetter, validateCron } from "./cron-scheduler"
+import { startScheduler, stopScheduler, reloadScheduledTasks, setSchedulerLogger, setPortGetter, validateCron, readTasksFromFile, writeTasksToFile } from "./cron-scheduler"
 
 const LOG_BUFFER_MAX = 300
 const logBuffer: string[] = []
@@ -320,6 +320,7 @@ function startStatusPolling(): void {
     const status = await getDaemonStatus()
     broadcastStatus(status)
     if (status.running && status.queueLength && status.queueLength > 0 && !isAgentRunning()) {
+      await new Promise((r) => setTimeout(r, 1000))
       const message = await pullMessageFromQueue()
       if (message) {
         broadcastLog(`检测到排队消息，自动拉起 Agent`)
@@ -464,11 +465,20 @@ export function getLogBuffer(): string[] {
 
 // ── MCP 配置 + 规则注入 ────────────────────────────────────
 
-function getLiteMcpEntryPath(): string {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, "lite", "dist", "index.js")
+/**
+ * 按优先级检查全局和项目 mcp.json 中是否已存在指定 serverKey。
+ * 存在则返回该文件路径（原地更新），都不存在返回 null（将注入项目目录）。
+ */
+function findExistingMcpLocation(globalPath: string, projectPath: string, serverKey: string): string | null {
+  for (const p of [globalPath, projectPath]) {
+    try {
+      if (!fs.existsSync(p)) continue
+      const config = JSON.parse(fs.readFileSync(p, "utf-8"))
+      const servers = config?.mcpServers as Record<string, unknown> | undefined
+      if (servers && serverKey in servers) return p
+    } catch { /* ignore parse error */ }
   }
-  return path.join(app.getAppPath(), "lite", "dist", "index.js")
+  return null
 }
 
 export function injectWorkspaceMcpAndRules(): { mcpOk: boolean; ruleOk: boolean } {
@@ -481,32 +491,39 @@ export function injectWorkspaceMcpAndRules(): { mcpOk: boolean; ruleOk: boolean 
 
   let mcpOk = false
   try {
-    const mcpJsonPath = path.join(cursorDir, "mcp.json")
-    let mcpConfig: Record<string, unknown> = {}
-    if (fs.existsSync(mcpJsonPath)) {
-      try { mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, "utf-8")) } catch { mcpConfig = {} }
-    }
-    const servers = (mcpConfig.mcpServers ?? {}) as Record<string, unknown>
-    const entryPath = getLiteMcpEntryPath()
+    const globalMcpJsonPath = path.join(os.homedir(), ".cursor", "mcp.json")
+    const projectMcpJsonPath = path.join(cursorDir, "mcp.json")
 
     const env: Record<string, string> = {
       LARK_APP_ID: config.larkAppId || "",
       LARK_APP_SECRET: config.larkAppSecret || "",
       LARK_RECEIVE_ID: config.larkReceiveId || "",
       LARK_RECEIVE_ID_TYPE: config.larkReceiveIdType || "",
-      LARK_WORKSPACE_DIR: wsDir,
     }
     if (cachedPort) env.LARK_DAEMON_PORT = String(cachedPort)
 
-    servers["feishu-cursor-bridge"] = {
-      command: "node",
-      args: [entryPath],
+    const serverEntry = {
+      command: "npx",
+      args: ["-y", "lark-bridge-mcp@latest"],
       env,
     }
+    const serverKey = "feishu-cursor-bridge"
+
+    const targetPath = findExistingMcpLocation(globalMcpJsonPath, projectMcpJsonPath, serverKey) ?? projectMcpJsonPath
+
+    let mcpConfig: Record<string, unknown> = {}
+    if (fs.existsSync(targetPath)) {
+      try { mcpConfig = JSON.parse(fs.readFileSync(targetPath, "utf-8")) } catch { mcpConfig = {} }
+    }
+    const servers = (mcpConfig.mcpServers ?? {}) as Record<string, unknown>
+    servers[serverKey] = serverEntry
     mcpConfig.mcpServers = servers
-    fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), "utf-8")
+
+    const targetDir = path.dirname(targetPath)
+    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true })
+    fs.writeFileSync(targetPath, JSON.stringify(mcpConfig, null, 2), "utf-8")
     mcpOk = true
-    broadcastLog(`MCP 配置已注入: ${mcpJsonPath}`)
+    broadcastLog(`MCP 配置已${targetPath === projectMcpJsonPath ? "注入" : "更新"}: ${targetPath}`)
   } catch (e: unknown) {
     broadcastLog(`MCP 注入失败: ${e instanceof Error ? e.message : e}`)
   }
@@ -694,13 +711,12 @@ export function initDaemonManager(): void {
   ipcMain.handle("daemon:get-log-buffer", () => getLogBuffer())
   ipcMain.handle("agent:launch", () => launchAgent())
   ipcMain.handle("agent:stop", () => { stopAgent(); return { ok: true } })
-  ipcMain.handle("workspace:inject", () => injectWorkspaceMcpAndRules())
 
   ipcMain.handle("scheduled-tasks:get", () => {
-    return getConfig().scheduledTasks ?? []
+    return readTasksFromFile()
   })
   ipcMain.handle("scheduled-tasks:save", (_, tasks) => {
-    saveConfig({ scheduledTasks: tasks })
+    writeTasksToFile(tasks)
     reloadScheduledTasks()
     return { ok: true }
   })

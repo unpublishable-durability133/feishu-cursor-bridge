@@ -1,11 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as Lark from "@larksuiteoapi/node-sdk";
+import { initFileQueue, pushToFileQueue, pollFileQueueBatch, cleanupStaleMessages } from "./file-queue.js";
 
 // ── stdout 保护：MCP 用 stdio 通信，任何非协议输出都会破坏 JSON-RPC 帧 ──
 const _origStdoutWrite = process.stdout.write.bind(process.stdout);
@@ -53,115 +53,23 @@ function log(level: string, ...args: unknown[]): void {
   process.stderr.write(`[${localTimestamp()}][${level}] ${msg}\n`);
 }
 
-// ── 单实例保护（PID 锁）────────────────────────────────
+// ── 优雅退出（stdio 断开检测，防止僵尸进程）────────────
 
-const workspaceDirs = [
-  process.env.LARK_WORKSPACE_DIR,
-  process.cwd(),
-].filter(Boolean) as string[];
+let isShuttingDown = false;
 
-function resolvePidFilePath(): string {
-  for (const ws of workspaceDirs) {
-    const cursorDir = path.join(ws, ".cursor");
-    if (fs.existsSync(cursorDir)) return path.join(cursorDir, ".lark-mcp.pid");
-  }
-  return path.join(os.tmpdir(), ".lark-mcp.pid");
+function gracefulShutdown(reason: string): void {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  log("INFO", `进程退出中 (reason=${reason}, PID=${process.pid})`);
+  setTimeout(() => process.exit(0), 300);
 }
 
-const MCP_PID_FILE = resolvePidFilePath();
-
-function killPreviousInstance(): void {
-  try {
-    if (!fs.existsSync(MCP_PID_FILE)) return;
-    const oldPid = parseInt(fs.readFileSync(MCP_PID_FILE, "utf-8").trim(), 10);
-    if (isNaN(oldPid) || oldPid === process.pid) return;
-    try {
-      process.kill(oldPid, 0);
-      log("WARN", `发现旧 MCP 进程 (PID=${oldPid})，正在终止...`);
-      process.kill(oldPid);
-    } catch { /* already dead */ }
-  } catch (e: any) {
-    log("WARN", `清理旧进程失败: ${e?.message ?? e}`);
-  }
-}
-
-function writePidFile(): void {
-  try {
-    const dir = path.dirname(MCP_PID_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(MCP_PID_FILE, String(process.pid), "utf-8");
-
-    const cleanup = () => {
-      try { fs.unlinkSync(MCP_PID_FILE); } catch { /* best-effort */ }
-    };
-    process.on("exit", cleanup);
-    process.on("SIGTERM", () => { cleanup(); process.exit(0); });
-    process.on("SIGINT", () => { cleanup(); process.exit(0); });
-  } catch (e: any) {
-    log("WARN", `写入 PID 文件失败: ${e?.message ?? e}`);
-  }
-}
-
-// ── Daemon HTTP 客户端 ──────────────────────────────────
-
-let daemonBaseUrl = "";
-
-function findDaemonPort(): number | null {
-  const envPort = process.env.LARK_DAEMON_PORT;
-  if (envPort) {
-    const p = Number(envPort);
-    if (p > 0) { log("INFO", `从 LARK_DAEMON_PORT 环境变量获取端口: ${p}`); return p; }
-  }
-  for (const ws of workspaceDirs) {
-    const lockPath = path.join(ws, ".cursor", ".lark-daemon.json");
-    try {
-      const raw = fs.readFileSync(lockPath, "utf-8");
-      const data = JSON.parse(raw);
-      if (data.port) return Number(data.port);
-    } catch { /* lock not found */ }
-  }
-  return null;
-}
-
-function httpRequest(method: string, urlPath: string, body?: unknown, timeoutMs = 30_000): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(urlPath, daemonBaseUrl);
-    const payload = body ? JSON.stringify(body) : undefined;
-    const req = http.request(url, {
-      method,
-      headers: payload
-        ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
-        : undefined,
-      timeout: timeoutMs,
-    }, (res) => {
-      let data = "";
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        try { resolve(JSON.parse(data)); }
-        catch { resolve(data); }
-      });
-    });
-    req.on("error", reject);
-    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
-    if (payload) req.write(payload);
-    req.end();
-  });
-}
-
-async function pingDaemon(port: number): Promise<boolean> {
-  try {
-    const resp = await httpRequest("GET", `/health`);
-    return resp?.status === "ok";
-  } catch { return false; }
-}
-
-// ── 内嵌模式（无 Daemon 时降级使用）─────────────────────
+// ── Lark Client ─────────────────────────────────────────
 
 type ReceiveIdType = "open_id" | "union_id" | "user_id" | "chat_id" | "email";
 interface SendTarget { receiveIdType: ReceiveIdType; receiveId: string }
 let resolvedTarget: SendTarget | null = null;
 let autoOpenId = "";
-let embeddedMode = false;
 
 const larkClient = new Lark.Client({
   appId: APP_ID, appSecret: APP_SECRET,
@@ -216,7 +124,9 @@ function getSendTarget(): SendTarget | null {
   return null;
 }
 
-async function embeddedSendMessage(text: string): Promise<void> {
+// ── 发送（始终直接调用 Lark API）──────────────────────────
+
+async function sendMessage(text: string): Promise<void> {
   const target = getSendTarget();
   if (!target) { log("WARN", "无发送目标"); return; }
   try {
@@ -228,7 +138,7 @@ async function embeddedSendMessage(text: string): Promise<void> {
   } catch (e: any) { log("ERROR", `飞书发送异常: ${e?.message ?? e}`); }
 }
 
-async function embeddedSendImage(imagePath: string): Promise<void> {
+async function sendImage(imagePath: string): Promise<void> {
   const target = getSendTarget();
   if (!target) { log("WARN", "无发送目标"); return; }
   const absPath = path.resolve(imagePath);
@@ -245,7 +155,7 @@ async function embeddedSendImage(imagePath: string): Promise<void> {
   } catch (e: any) { log("ERROR", `发送图片异常: ${e?.message ?? e}`); }
 }
 
-async function embeddedSendFile(filePath: string): Promise<void> {
+async function sendFile(filePath: string): Promise<void> {
   const target = getSendTarget();
   if (!target) { log("WARN", "无发送目标"); return; }
   const absPath = path.resolve(filePath);
@@ -262,6 +172,8 @@ async function embeddedSendFile(filePath: string): Promise<void> {
     log("INFO", `文件已发送: ${fileName}`);
   } catch (e: any) { log("ERROR", `发送文件异常: ${e?.message ?? e}`); }
 }
+
+// ── 接收（WebSocket → 共享文件队列 → poll 读取）──────────
 
 const IMAGE_DOWNLOAD_DIR = path.join(os.tmpdir(), "lark-bridge-images");
 
@@ -322,69 +234,17 @@ async function processIncomingMessage(messageId: string, messageType: string, co
   return parts.join("\n");
 }
 
-const messageQueue: string[] = [];
-const pollWaiters: { resolve: (v: string | null) => void; timer: ReturnType<typeof setTimeout> }[] = [];
-const processedMessageIds = new Set<string>();
-
 function pushMessage(content: string, messageId?: string): void {
-  if (!content || !content.trim()) {
+  if (!content?.trim()) {
     log("WARN", `丢弃空消息 (messageId=${messageId})`);
     return;
   }
-  if (messageId) {
-    if (processedMessageIds.has(messageId)) return;
-    processedMessageIds.add(messageId);
-    if (processedMessageIds.size > 200) { const first = processedMessageIds.values().next().value; if (first !== undefined) processedMessageIds.delete(first); }
+  const written = pushToFileQueue(content, messageId, `mcp-${process.pid}`);
+  if (written) {
+    log("INFO", `消息已写入共享队列: "${content.slice(0, 60)}" (id=${messageId ?? "none"})`);
+  } else {
+    log("INFO", `消息已跳过（重复或写入失败）: id=${messageId ?? "none"}`);
   }
-  log("INFO", `pushMessage: "${content.slice(0, 60)}", waiters=${pollWaiters.length}, queue=${messageQueue.length}`);
-  while (pollWaiters.length > 0) {
-    const waiter = pollWaiters.shift()!;
-    clearTimeout(waiter.timer);
-    waiter.resolve(content);
-    return;
-  }
-  messageQueue.push(content);
-}
-
-function drainEmptyMessages(): void {
-  while (messageQueue.length > 0 && !messageQueue[0]?.trim()) {
-    messageQueue.shift();
-  }
-}
-
-function pullMessage(timeoutMs: number): Promise<string | null> {
-  drainEmptyMessages();
-  if (messageQueue.length > 0) {
-    const msg = messageQueue.shift()!;
-    log("INFO", `pullMessage: 从队列取出 "${msg.slice(0, 40)}", 剩余=${messageQueue.length}`);
-    return Promise.resolve(msg);
-  }
-  log("INFO", `pullMessage: 队列为空, 创建 waiter (timeout=${timeoutMs}ms)`);
-  return new Promise((resolve) => {
-    const entry = {
-      resolve,
-      timer: setTimeout(() => {
-        const idx = pollWaiters.indexOf(entry);
-        if (idx >= 0) pollWaiters.splice(idx, 1);
-        log("INFO", `pullMessage: waiter 超时 (${timeoutMs}ms), queue=${messageQueue.length}`);
-        resolve(null);
-      }, timeoutMs),
-    };
-    pollWaiters.push(entry);
-  });
-}
-
-async function waitForReply(timeoutMs: number): Promise<string | null> {
-  const first = await pullMessage(timeoutMs);
-  if (first === null) return null;
-  const messages = [first];
-  while (messageQueue.length > 0) {
-    const next = messageQueue[0];
-    if (!next?.trim()) { messageQueue.shift(); continue; }
-    messages.push(messageQueue.shift()!);
-  }
-  log("INFO", `waitForReply: 返回 ${messages.length} 条消息, 剩余队列=${messageQueue.length}`);
-  return messages.join("\n");
 }
 
 function startLarkConnection(): void {
@@ -425,44 +285,9 @@ function startLarkConnection(): void {
   wsClient.start({ eventDispatcher }).then(() => log("INFO", "飞书 WebSocket 连接建立成功")).catch((e: any) => log("ERROR", `飞书 WebSocket 连接失败: ${e?.message ?? e}`));
 }
 
-// ── 统一 API（daemon 代理 / 内嵌）─────────────────────────
-
-async function sendMessage(text: string): Promise<void> {
-  if (!embeddedMode) {
-    await httpRequest("POST", "/send", { text });
-  } else {
-    await embeddedSendMessage(text);
-  }
-}
-
-async function sendImage(imagePath: string): Promise<void> {
-  if (!embeddedMode) {
-    await httpRequest("POST", "/send-image", { image_path: imagePath });
-  } else {
-    await embeddedSendImage(imagePath);
-  }
-}
-
-async function sendFile(filePath: string): Promise<void> {
-  if (!embeddedMode) {
-    await httpRequest("POST", "/send-file", { file_path: filePath });
-  } else {
-    await embeddedSendFile(filePath);
-  }
-}
-
-async function pollReply(timeoutMs: number): Promise<string | null> {
-  if (!embeddedMode) {
-    const httpTimeout = timeoutMs + 10_000;
-    const resp = await httpRequest("GET", `/poll?timeout=${timeoutMs}`, undefined, httpTimeout);
-    return resp?.message ?? null;
-  }
-  return await waitForReply(timeoutMs);
-}
-
 // ── MCP Server ──────────────────────────────────────────
 
-const mcpServer = new McpServer({ name: "feishu-cursor-bridge", version: "2.2.7", description: "飞书消息桥接 – 通过飞书与用户沟通" });
+const mcpServer = new McpServer({ name: "feishu-cursor-bridge", version: "2.3.1", description: "飞书消息桥接 – 通过飞书与用户沟通" });
 
 mcpServer.tool(
   "sync_message",
@@ -476,7 +301,7 @@ mcpServer.tool(
       if (message) await sendMessage(message);
       const timeoutMs = (timeout_seconds && timeout_seconds > 0) ? timeout_seconds * 1000 : 0;
       if (timeoutMs > 0) {
-        const reply = await pollReply(timeoutMs);
+        const reply = await pollFileQueueBatch(timeoutMs);
         if (reply === null) return { content: [{ type: "text", text: "[waiting]" }] };
         return { content: [{ type: "text", text: reply }] };
       }
@@ -504,61 +329,45 @@ mcpServer.tool(
 
 // ── 主函数 ───────────────────────────────────────────────
 
-async function tryConnectDaemon(maxRetries = 3, retryDelayMs = 2000): Promise<boolean> {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const port = findDaemonPort();
-    if (port) {
-      daemonBaseUrl = `http://127.0.0.1:${port}`;
-      const alive = await pingDaemon(port);
-      if (alive) {
-        embeddedMode = false;
-        log("INFO", `已连接 daemon (port=${port})，代理模式${attempt > 1 ? ` (第${attempt}次尝试)` : ""}`);
-        return true;
-      }
-      log("WARN", `daemon lock 存在但无响应 (port=${port})${attempt < maxRetries ? "，稍后重试..." : ""}`);
-    } else {
-      log("INFO", `未检测到 daemon${attempt < maxRetries ? "，稍后重试..." : ""}`);
-    }
-    if (attempt < maxRetries) await new Promise((r) => setTimeout(r, retryDelayMs));
-  }
-  return false;
-}
-
 export async function main(): Promise<void> {
-  killPreviousInstance();
-  writePidFile();
-
-  log("INFO", "════════════════════════════════════════════════");
-  log("INFO", `feishu-cursor-bridge MCP v2.2.7 启动 (PID=${process.pid})`);
-  log("INFO", `workspaceDirs: ${JSON.stringify(workspaceDirs)}`);
-  log("INFO", "════════════════════════════════════════════════");
-
-  const hasDaemonPortHint = !!process.env.LARK_DAEMON_PORT;
-  const connected = await tryConnectDaemon(hasDaemonPortHint ? 5 : 3, 2000);
-
-  if (!connected) {
-    if (hasDaemonPortHint) {
-      log("ERROR", "应用版模式下 daemon 不可达，MCP 将以纯代理模式运行（无内嵌 WebSocket，避免连接冲突）");
-      embeddedMode = false;
-      daemonBaseUrl = `http://127.0.0.1:${process.env.LARK_DAEMON_PORT}`;
-    } else {
-      log("INFO", "降级为内嵌模式");
-      embeddedMode = true;
-    }
+  if (!APP_ID || !APP_SECRET) {
+    log("ERROR", "LARK_APP_ID / LARK_APP_SECRET 未配置");
+    process.exit(1);
   }
 
-  if (embeddedMode) {
-    if (!APP_ID || !APP_SECRET) {
-      log("ERROR", "LARK_APP_ID / LARK_APP_SECRET 未配置");
-      process.exit(1);
-    }
-    await initSendTarget();
-    startLarkConnection();
-  }
+  log("INFO", "════════════════════════════════════════════════");
+  log("INFO", `feishu-cursor-bridge MCP v2.3.1 启动 (PID=${process.pid})`);
+  log("INFO", "════════════════════════════════════════════════");
+
+  const queueDir = initFileQueue(APP_ID);
+  log("INFO", `共享文件队列: ${queueDir}`);
+  cleanupStaleMessages();
+
+  await initSendTarget();
+  startLarkConnection();
 
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
-  log("INFO", `MCP Server 已连接 stdio ✓ (${embeddedMode ? "内嵌" : "代理"}模式)`);
+  log("INFO", "MCP Server 已连接 stdio ✓");
+
+  transport.onclose = () => {
+    gracefulShutdown("transport-closed");
+  };
+  process.stdin.on("end", () => {
+    gracefulShutdown("stdin-end");
+  });
+  process.stdin.on("close", () => {
+    gracefulShutdown("stdin-close");
+  });
+  if (process.platform === "win32") {
+    const stdinWatchdog = setInterval(() => {
+      if (process.stdin.destroyed || !process.stdin.readable) {
+        clearInterval(stdinWatchdog);
+        gracefulShutdown("stdin-destroyed");
+      }
+    }, 5000);
+    stdinWatchdog.unref();
+  }
 }
 
 main().catch((e) => { log("ERROR", `MCP main 异常: ${e?.message ?? e}`); });

@@ -61,6 +61,9 @@ export default function Dashboard({ onSettings }: Props) {
 
     window.electronAPI.checkCli().then((ok) => setCliStatus(ok ? "installed" : "missing"))
     window.electronAPI.getScheduledTasks().then(setTasks)
+    const taskTimer = setInterval(() => {
+      window.electronAPI.getScheduledTasks().then(setTasks)
+    }, 5_000)
     window.electronAPI.getLogBuffer().then((buf) => {
       if (buf.length > 0) setLogs(buf.join("\n"))
     })
@@ -75,6 +78,7 @@ export default function Dashboard({ onSettings }: Props) {
     })
     return () => {
       clearInterval(timer)
+      clearInterval(taskTimer)
       unsub()
       unsubLog()
     }

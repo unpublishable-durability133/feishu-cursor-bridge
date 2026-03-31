@@ -1,10 +1,21 @@
 import cron, { type ScheduledTask as CronJob } from "node-cron"
 import * as http from "node:http"
-import { getConfig, type ScheduledTask } from "./config-store"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import * as os from "node:os"
+import type { ScheduledTask } from "./config-store"
 
 const runningJobs = new Map<string, CronJob>()
 let logFn: ((msg: string) => void) | null = null
 let portGetter: (() => number | null) | null = null
+let fileWatcher: fs.FSWatcher | null = null
+
+const TASKS_DIR = path.join(os.homedir(), ".lark-bridge-mcp")
+const TASKS_FILE = path.join(TASKS_DIR, "scheduled-tasks.json")
+
+export function getTasksFilePath(): string {
+  return TASKS_FILE
+}
 
 export function setSchedulerLogger(fn: (msg: string) => void): void {
   logFn = fn
@@ -56,6 +67,35 @@ function enqueueMessage(content: string): void {
   })
 }
 
+export function readTasksFromFile(): ScheduledTask[] {
+  try {
+    if (!fs.existsSync(TASKS_FILE)) return []
+    const raw = fs.readFileSync(TASKS_FILE, "utf-8")
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (t: unknown): t is ScheduledTask =>
+        typeof t === "object" && t !== null &&
+        typeof (t as ScheduledTask).id === "string" &&
+        typeof (t as ScheduledTask).name === "string" &&
+        typeof (t as ScheduledTask).cron === "string" &&
+        typeof (t as ScheduledTask).content === "string"
+    ).map((t) => ({ ...t, enabled: t.enabled !== false }))
+  } catch (e) {
+    log(`读取任务文件失败: ${e instanceof Error ? e.message : String(e)}`)
+    return []
+  }
+}
+
+export function writeTasksToFile(tasks: ScheduledTask[]): void {
+  try {
+    if (!fs.existsSync(TASKS_DIR)) fs.mkdirSync(TASKS_DIR, { recursive: true })
+    fs.writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2), "utf-8")
+  } catch (e) {
+    log(`写入任务文件失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
 function scheduleTask(task: ScheduledTask): void {
   if (runningJobs.has(task.id)) {
     runningJobs.get(task.id)!.stop()
@@ -82,8 +122,7 @@ function scheduleTask(task: ScheduledTask): void {
 
 export function reloadScheduledTasks(): void {
   stopAllJobs()
-  const config = getConfig()
-  const tasks = config.scheduledTasks ?? []
+  const tasks = readTasksFromFile()
   if (tasks.length === 0) return
 
   log(`加载 ${tasks.length} 个定时任务`)
@@ -99,12 +138,43 @@ function stopAllJobs(): void {
   runningJobs.clear()
 }
 
+function startFileWatcher(): void {
+  stopFileWatcher()
+  if (!fs.existsSync(TASKS_DIR)) {
+    try { fs.mkdirSync(TASKS_DIR, { recursive: true }) } catch { /* ignore */ }
+  }
+
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  try {
+    fileWatcher = fs.watch(TASKS_DIR, (eventType, filename) => {
+      if (filename !== "scheduled-tasks.json") return
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        log("检测到定时任务配置文件变化，重新加载...")
+        reloadScheduledTasks()
+      }, 500)
+    })
+    fileWatcher.on("error", () => { /* ignore */ })
+  } catch (e) {
+    log(`文件监听启动失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+function stopFileWatcher(): void {
+  if (fileWatcher) {
+    fileWatcher.close()
+    fileWatcher = null
+  }
+}
+
 export function startScheduler(): void {
   reloadScheduledTasks()
+  startFileWatcher()
 }
 
 export function stopScheduler(): void {
   stopAllJobs()
+  stopFileWatcher()
   log("调度器已停止")
 }
 
