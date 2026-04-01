@@ -24,7 +24,7 @@ export interface DaemonStatus {
   hasTarget?: boolean
   autoOpenId?: string | null
   model?: string
-  cliAvailable?: boolean | string
+  cliAvailable?: boolean
   error?: string
 }
 
@@ -75,6 +75,7 @@ const api = {
   getQueueMessages: (): Promise<{ index: number; preview: string }[]> => ipcRenderer.invoke("daemon:queue"),
   checkCli: (): Promise<boolean> => ipcRenderer.invoke("cli:check"),
   installCli: (): Promise<{ ok: boolean; output: string }> => ipcRenderer.invoke("cli:install"),
+  loginCli: (): Promise<{ ok: boolean; output: string }> => ipcRenderer.invoke("cli:login"),
   listModels: (): Promise<{ ok: boolean; models: { id: string; label: string; current: boolean }[]; error?: string }> => ipcRenderer.invoke("models:list"),
   getScheduledTasks: (): Promise<ScheduledTask[]> => ipcRenderer.invoke("scheduled-tasks:get"),
   saveScheduledTasks: (tasks: ScheduledTask[]): Promise<{ ok: boolean }> => ipcRenderer.invoke("scheduled-tasks:save", tasks),

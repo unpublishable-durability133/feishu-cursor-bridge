@@ -28,6 +28,7 @@ export interface DaemonStatus {
   autoOpenId?: string | null
   agentRunning?: boolean
   agentPid?: number | null
+  cliAvailable?: boolean
   error?: string
 }
 
@@ -119,6 +120,7 @@ export async function getDaemonStatus(): Promise<DaemonStatus> {
         autoOpenId: health.autoOpenId as string | null,
         agentRunning: isAgentRunning(),
         agentPid: agentChild?.pid ?? null,
+        cliAvailable: resolveAgentBinary(),
       }
 
       if (status.autoOpenId) {
@@ -155,6 +157,31 @@ function ensureCliConfig(): void {
       fs.writeFileSync(cliConfigPath, JSON.stringify(config, null, 2), "utf-8")
     }
   } catch { /* ignore */ }
+}
+
+const PROXY_ENV_KEYS = [
+  "HTTP_PROXY", "http_proxy",
+  "HTTPS_PROXY", "https_proxy",
+  "ALL_PROXY", "all_proxy",
+  "NO_PROXY", "no_proxy",
+] as const
+
+function applyProxyEnv(env: Record<string, string>, config: { httpProxy?: string; httpsProxy?: string; noProxy?: string }): void {
+  for (const key of PROXY_ENV_KEYS) delete env[key]
+  if (config.httpProxy) {
+    env.HTTP_PROXY = config.httpProxy
+    env.http_proxy = config.httpProxy
+  }
+  if (config.httpsProxy) {
+    env.HTTPS_PROXY = config.httpsProxy
+    env.https_proxy = config.httpsProxy
+    env.ALL_PROXY = config.httpsProxy
+    env.all_proxy = config.httpsProxy
+  }
+  if (config.noProxy) {
+    env.NO_PROXY = config.noProxy
+    env.no_proxy = config.noProxy
+  }
 }
 
 export async function startDaemon(): Promise<{ ok: boolean; error?: string }> {
@@ -201,20 +228,7 @@ export async function startDaemon(): Promise<{ ok: boolean; error?: string }> {
       LARK_WORKSPACE_DIR: config.workspaceDir,
       NODE_USE_ENV_PROXY: "1",
     }
-    if (config.httpProxy) {
-      env.HTTP_PROXY = config.httpProxy
-      env.http_proxy = config.httpProxy
-    }
-    if (config.httpsProxy) {
-      env.HTTPS_PROXY = config.httpsProxy
-      env.https_proxy = config.httpsProxy
-      env.ALL_PROXY = config.httpsProxy
-      env.all_proxy = config.httpsProxy
-    }
-    if (config.noProxy) {
-      env.NO_PROXY = config.noProxy
-      env.no_proxy = config.noProxy
-    }
+    applyProxyEnv(env, config)
 
     let earlyOutput = ""
     let earlyExit: number | null = null
@@ -441,6 +455,7 @@ function refreshPath(): void {
 }
 
 export function checkCliInstalled(): boolean {
+  if (resolveAgentBinary()) return true
   refreshPath()
   try {
     execSync("agent --version", { stdio: "ignore", timeout: 5000 })
@@ -472,11 +487,12 @@ export async function installCli(): Promise<{ ok: boolean; output: string }> {
 
     child.on("exit", (code) => {
       if (code === 0) {
-        const installed = checkCliInstalled()
+        refreshPath()
+        const installed = resolveAgentBinary() || checkCliInstalled()
         resolve({
           ok: installed,
           output: installed
-            ? "CLI 安装成功！"
+            ? "CLI 安装成功！请点击「登录授权」完成 Cursor 账号认证。"
             : output || "安装脚本执行完毕，但 agent 命令仍不可用。请重新打开终端后重试。",
         })
       } else {
@@ -487,6 +503,85 @@ export async function installCli(): Promise<{ ok: boolean; output: string }> {
     child.on("error", (e) => {
       resolve({ ok: false, output: `安装进程错误: ${e.message}` })
     })
+  })
+}
+
+export function loginCli(): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    if (!resolveAgentBinary()) {
+      refreshPath()
+      try {
+        execSync("agent --version", { stdio: "ignore", timeout: 5000 })
+      } catch {
+        resolve({ ok: false, output: "Cursor CLI 未安装，请先安装" })
+        return
+      }
+    }
+
+    const config = getConfig()
+    const args = ["login"]
+
+    const spawnEnv: Record<string, string> = { ...process.env as Record<string, string> }
+    applyProxyEnv(spawnEnv, config)
+
+    let output = ""
+    let child: ChildProcess
+    let settled = false
+
+    broadcastLog("[CLI Login] 正在打开浏览器进行 Cursor 账号授权...")
+
+    try {
+      if (agentNodePath && agentIndexPath) {
+        child = spawn(agentNodePath, [agentIndexPath, ...args], {
+          windowsHide: false,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: spawnEnv,
+        })
+      } else {
+        child = spawn("agent", args, {
+          shell: process.platform === "win32",
+          windowsHide: false,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: spawnEnv,
+        })
+      }
+
+      child.stdout?.on("data", (d: Buffer) => {
+        const s = d.toString().trim()
+        output += s + "\n"
+        if (s) broadcastLog(`[CLI Login] ${s.slice(0, 300)}`)
+      })
+
+      child.stderr?.on("data", (d: Buffer) => {
+        const s = d.toString().trim()
+        output += s + "\n"
+        if (s) broadcastLog(`[CLI Login:err] ${s.slice(0, 300)}`)
+      })
+
+      child.on("exit", (code) => {
+        if (settled) return
+        settled = true
+        resolve(code === 0
+          ? { ok: true, output: "Cursor CLI 登录授权成功！" }
+          : { ok: false, output: output || `登录失败 (exit code: ${code})` })
+      })
+
+      child.on("error", (e) => {
+        if (settled) return
+        settled = true
+        resolve({ ok: false, output: `登录进程错误: ${e.message}` })
+      })
+
+      setTimeout(() => {
+        if (!settled) {
+          settled = true
+          if (!child.killed) try { child.kill() } catch { /* ignore */ }
+          resolve({ ok: false, output: "登录超时（2分钟），请重试" })
+        }
+      }, 120_000)
+    } catch (e: unknown) {
+      resolve({ ok: false, output: `启动登录失败: ${e instanceof Error ? e.message : String(e)}` })
+    }
   })
 }
 
@@ -672,20 +767,7 @@ export function launchAgent(initialMessage?: string): { ok: boolean; error?: str
 
   const spawnEnv: Record<string, string> = { ...process.env as Record<string, string>, CURSOR_INVOKED_AS: "agent" }
   delete spawnEnv.NODE_USE_ENV_PROXY
-  if (config.httpProxy) {
-    spawnEnv.HTTP_PROXY = config.httpProxy
-    spawnEnv.http_proxy = config.httpProxy
-  }
-  if (config.httpsProxy) {
-    spawnEnv.HTTPS_PROXY = config.httpsProxy
-    spawnEnv.https_proxy = config.httpsProxy
-    spawnEnv.ALL_PROXY = config.httpsProxy
-    spawnEnv.all_proxy = config.httpsProxy
-  }
-  if (config.noProxy) {
-    spawnEnv.NO_PROXY = config.noProxy
-    spawnEnv.no_proxy = config.noProxy
-  }
+  applyProxyEnv(spawnEnv, config)
 
   try {
     if (agentNodePath && agentIndexPath) {
@@ -1069,17 +1151,13 @@ export function loginMcpServer(serverName: string): Promise<{ ok: boolean; outpu
 
     ensureMcpApproval(serverName, config.workspaceDir)
 
-    const args = ["mcp", "login", serverName]
+    const args = [
+      "--approve-mcps", "--workspace", config.workspaceDir,
+      "mcp", "login", serverName,
+    ]
 
     const spawnEnv: Record<string, string> = { ...process.env as Record<string, string> }
-    if (config.httpProxy) {
-      spawnEnv.HTTP_PROXY = config.httpProxy
-      spawnEnv.http_proxy = config.httpProxy
-    }
-    if (config.httpsProxy) {
-      spawnEnv.HTTPS_PROXY = config.httpsProxy
-      spawnEnv.https_proxy = config.httpsProxy
-    }
+    applyProxyEnv(spawnEnv, config)
 
     let output = ""
     broadcastLog(`[MCP Login] 正在认证 "${serverName}"...`)

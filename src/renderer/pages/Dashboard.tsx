@@ -29,8 +29,9 @@ export default function Dashboard({ onSettings }: Props) {
   const [actionError, setActionError] = useState("")
   const [queueMessages, setQueueMessages] = useState<{ index: number; preview: string }[]>([])
   const [showQueue, setShowQueue] = useState(false)
-  const [cliStatus, setCliStatus] = useState<"checking" | "installed" | "missing">("checking")
+  const [cliStatus, setCliStatus] = useState<"checking" | "installed" | "missing" | "need-login">("checking")
   const [cliInstalling, setCliInstalling] = useState(false)
+  const [cliLoggingIn, setCliLoggingIn] = useState(false)
   const [cliMessage, setCliMessage] = useState("")
   const [stoppingAgent, setStoppingAgent] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
@@ -39,6 +40,11 @@ export default function Dashboard({ onSettings }: Props) {
     const refresh = async () => {
       const s = await window.electronAPI.getDaemonStatus()
       setStatus(s)
+      if (s.running && s.cliAvailable !== undefined) {
+        setCliStatus((prev) => prev === "checking" || prev === "missing"
+          ? (s.cliAvailable ? "installed" : "missing")
+          : prev)
+      }
       if (s.queueLength && s.queueLength > 0) {
         const msgs = await window.electronAPI.getQueueMessages()
         setQueueMessages(msgs)
@@ -54,7 +60,14 @@ export default function Dashboard({ onSettings }: Props) {
       if (buf.length > 0) setLogs(buf.join("\n"))
     })
 
-    const unsub = window.electronAPI.onDaemonStatus((s) => setStatus(s))
+    const unsub = window.electronAPI.onDaemonStatus((s) => {
+      setStatus(s)
+      if (s.running && s.cliAvailable !== undefined) {
+        setCliStatus((prev) => prev === "checking" || prev === "missing"
+          ? (s.cliAvailable ? "installed" : "missing")
+          : prev)
+      }
+    })
     const unsubLog = window.electronAPI.onDaemonLog((line) => {
       setLogs((prev) => {
         const next = prev ? prev + "\n" + line : line
@@ -116,8 +129,19 @@ export default function Dashboard({ onSettings }: Props) {
     try {
       const result = await window.electronAPI.installCli()
       if (result.ok) {
-        setCliStatus("installed")
-        setCliMessage("")
+        setCliStatus("need-login")
+        setCliMessage("CLI 安装成功，正在打开浏览器进行授权...")
+        try {
+          const loginResult = await window.electronAPI.loginCli()
+          if (loginResult.ok) {
+            setCliStatus("installed")
+            setCliMessage("")
+          } else {
+            setCliMessage(loginResult.output)
+          }
+        } catch (e: unknown) {
+          setCliMessage(`授权失败: ${e instanceof Error ? e.message : String(e)}`)
+        }
       } else {
         setCliMessage(result.output)
       }

@@ -40,6 +40,7 @@ interface DaemonStatus {
   autoOpenId?: string | null
   agentRunning?: boolean
   agentPid?: number | null
+  cliAvailable?: boolean
   error?: string
 }
 
@@ -59,6 +60,7 @@ interface ElectronAPI {
   getQueueMessages(): Promise<{ index: number; preview: string }[]>
   checkCli(): Promise<boolean>
   installCli(): Promise<{ ok: boolean; output: string }>
+  loginCli(): Promise<{ ok: boolean; output: string }>
   listModels(): Promise<{ ok: boolean; models: { id: string; label: string; current: boolean }[]; error?: string }>
   getScheduledTasks(): Promise<ScheduledTask[]>
   saveScheduledTasks(tasks: ScheduledTask[]): Promise<{ ok: boolean }>

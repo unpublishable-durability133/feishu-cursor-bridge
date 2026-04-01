@@ -13,6 +13,7 @@ import {
   getQueueMessages,
   checkCliInstalled,
   installCli,
+  loginCli,
   getOAuthMcpList,
   getMcpServerList,
   saveMcpServer,
@@ -96,6 +97,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("daemon:queue", () => getQueueMessages())
   ipcMain.handle("cli:check", () => checkCliInstalled())
   ipcMain.handle("cli:install", () => installCli())
+  ipcMain.handle("cli:login", () => loginCli())
   ipcMain.handle("mcp:list-oauth", () => getOAuthMcpList())
   ipcMain.handle("mcp:list-all", () => getMcpServerList())
   ipcMain.handle("mcp:save", (_, name: string, entry: Record<string, unknown>, source: "global" | "project") => {
