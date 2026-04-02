@@ -127,6 +127,8 @@ xattr -cr /Applications/Feishu\ Cursor\ Bridge.app
 4. 选择 Cursor 工作目录，应用会自动注入 MCP 配置和 Rules
 5. 在 Dashboard 启动 Daemon，开始使用
 
+> 如果选择"自动识别"方式，启动 Daemon 后需要在飞书私聊机器人发一条消息，系统会自动记住你的身份。
+
 ### Lite 版
 
 #### 方式一：零配置（推荐新手）
