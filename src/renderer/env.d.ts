@@ -10,6 +10,7 @@ interface AppConfig {
   httpProxy: string
   httpsProxy: string
   noProxy: string
+  agentNewSession: boolean
 }
 
 interface ScheduledTask {

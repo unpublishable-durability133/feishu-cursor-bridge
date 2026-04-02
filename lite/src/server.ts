@@ -326,7 +326,7 @@ function startLarkConnection(): void {
 
 // ── MCP Server ──────────────────────────────────────────
 
-const mcpServer = new McpServer({ name: "feishu-cursor-bridge", version: "2.4.0", description: "飞书消息桥接 – 通过飞书与用户沟通" });
+const mcpServer = new McpServer({ name: "feishu-cursor-bridge", version: "2.4.4", description: "飞书消息桥接 – 通过飞书与用户沟通" });
 
 mcpServer.tool(
   "sync_message",
@@ -375,7 +375,7 @@ export async function main(): Promise<void> {
   }
 
   log("INFO", "════════════════════════════════════════════════");
-  log("INFO", `feishu-cursor-bridge MCP v2.4.0 启动 (PID=${process.pid})`);
+  log("INFO", `feishu-cursor-bridge MCP v2.4.4 启动 (PID=${process.pid})`);
   log("INFO", "════════════════════════════════════════════════");
 
   const queueDir = initFileQueue(APP_ID);

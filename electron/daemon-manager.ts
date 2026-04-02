@@ -754,12 +754,12 @@ export function launchAgent(initialMessage?: string): { ok: boolean; error?: str
   if (!resolveAgentBinary()) return { ok: false, error: "Cursor CLI 未安装" }
 
   const prompt = initialMessage
-    ? `以下是用户通过飞书发来的消息，请直接处理，不要发送问候语：\n\n${initialMessage}`
-    : "请立即调用 ask_user 工具（prompt 参数留空）获取待处理的飞书消息，然后根据消息内容开始工作。不要发送问候消息。"
+    ? `请遵守飞书工作流规则feishu-cursor-bridge开始工作,以下是用户通过飞书发来的消息，请直接处理，不要发送问候语：\n\n${initialMessage}`
+    : "请遵守飞书工作流规则feishu-cursor-bridge开始工作,先获取待处理的飞书消息，然后根据消息内容开始工作。不要发送问候消息。"
   const args = [
     "--print", 
     "--force", 
-    "--continue", 
+    ...(config.agentNewSession ? [] : ["--continue"]),
     "--approve-mcps",
     "--workspace", config.workspaceDir,
     "--trust",

@@ -12,6 +12,7 @@ export interface AppConfig {
   httpProxy: string
   httpsProxy: string
   noProxy: string
+  agentNewSession: boolean
 }
 
 export interface DaemonStatus {

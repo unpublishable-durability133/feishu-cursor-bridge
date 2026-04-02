@@ -62,6 +62,7 @@ export default function Settings({ onBack }: Props) {
   const [showSecret, setShowSecret] = useState(false)
   const [proxy, setProxy] = useState("")
   const [noProxy, setNoProxy] = useState("localhost,127.0.0.1")
+  const [agentNewSession, setAgentNewSession] = useState(false)
 
   const [saved, setSaved] = useState(false)
   const [modelOptions, setModelOptions] = useState<{ id: string; label: string }[]>([])
@@ -110,6 +111,7 @@ export default function Settings({ onBack }: Props) {
       setWorkspaceDir(config.workspaceDir); setModel(config.model)
       setProxy(config.httpProxy || config.httpsProxy || "")
       setNoProxy(config.noProxy || "localhost,127.0.0.1")
+      setAgentNewSession(config.agentNewSession ?? false)
       loaded.current = true
     })
     refreshMcpServers(); refreshRules(); refreshSkills(); refreshTasks()
@@ -127,10 +129,11 @@ export default function Settings({ onBack }: Props) {
         larkReceiveId: receiveId.trim(), larkReceiveIdType: idType,
         workspaceDir: workspaceDir.trim(), model,
         httpProxy: proxy.trim(), httpsProxy: proxy.trim(), noProxy: noProxy.trim(),
+        agentNewSession,
       })
       setSaved(true); setTimeout(() => setSaved(false), 1500)
     }, 500)
-  }, [appId, appSecret, receiveId, idType, workspaceDir, model, proxy, noProxy])
+  }, [appId, appSecret, receiveId, idType, workspaceDir, model, proxy, noProxy, agentNewSession])
 
   useEffect(() => { autoSave() }, [autoSave])
 
@@ -333,6 +336,21 @@ export default function Settings({ onBack }: Props) {
                 {modelOptions.length > 0
                   ? <SearchableSelect value={model} onChange={setModel} options={modelOptions} placeholder="选择模型..." />
                   : <input type="text" value={model} onChange={(e) => setModel(e.target.value)} placeholder="auto" className={inputCls} />}
+              </section>
+              <section className="space-y-3">
+                <h3 className="text-sm font-medium text-gray-300">Agent 会话</h3>
+                <div className="flex items-center justify-between rounded-lg border border-gray-700 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium">每次开启新会话</p>
+                    <p className="text-xs text-gray-500">开启后 Agent 每次启动都会创建新会话，关闭则延续上一次会话</p>
+                  </div>
+                  <button
+                    onClick={() => setAgentNewSession(!agentNewSession)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 ${agentNewSession ? "bg-green-500" : "bg-gray-600"}`}
+                  >
+                    <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform duration-200 ${agentNewSession ? "translate-x-[18px]" : "translate-x-[3px]"}`} />
+                  </button>
+                </div>
               </section>
               <p className="text-xs text-gray-500">设置修改后自动保存，下次重启 Daemon 后生效</p>
             </>)}

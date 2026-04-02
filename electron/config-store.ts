@@ -20,6 +20,7 @@ export interface AppConfig {
   httpProxy: string
   httpsProxy: string
   noProxy: string
+  agentNewSession: boolean
   scheduledTasks: ScheduledTask[]
   verifiedMcpServers: string[]
 }
@@ -36,6 +37,7 @@ const defaults: AppConfig = {
   httpProxy: "",
   httpsProxy: "",
   noProxy: "localhost,127.0.0.1",
+  agentNewSession: false,
   scheduledTasks: [],
   verifiedMcpServers: [],
 }
