@@ -74,7 +74,7 @@ function rotateLogIfNeeded(): void {
 function log(level: string, ...args: unknown[]): void {
   const ts = localTimestamp();
   const msg = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
-  const line = `${ts},LarkDaemon,${level},${escapeCsvLogField(msg)}\n`;
+  const line = `${ts} [LarkDaemon] ${level} ${escapeLogContentSingleLine(msg)}\n`;
   process.stderr.write(line);
   try {
     ensureLogDir();
