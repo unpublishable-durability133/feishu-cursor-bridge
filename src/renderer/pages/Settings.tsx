@@ -21,6 +21,7 @@ import {
   FileCode2,
   Timer,
   Sparkles,
+  Bot,
 } from "lucide-react"
 import SearchableSelect from "../components/SearchableSelect"
 import WorkspaceDaemonModal from "../components/WorkspaceDaemonModal"
@@ -28,7 +29,7 @@ import WorkspaceDaemonModal from "../components/WorkspaceDaemonModal"
 interface Props { onBack: () => void }
 
 type IdType = "open_id" | "user_id" | "chat_id"
-type Tab = "general" | "proxy" | "mcp" | "rules" | "tasks" | "skills"
+type Tab = "general" | "proxy" | "agent" | "mcp" | "rules" | "tasks" | "skills"
 type CloseWindowAction = "ask" | "minimize" | "quit"
 
 interface McpEditForm {
@@ -46,6 +47,7 @@ const emptyMcpForm: McpEditForm = { json: MCP_TEMPLATE, source: "global" }
 const TABS: { id: Tab; label: string; icon: typeof SettingsIcon }[] = [
   { id: "general", label: "通用", icon: SettingsIcon },
   { id: "proxy", label: "网络", icon: Network },
+  { id: "agent", label: "Agent", icon: Bot },
   { id: "mcp", label: "MCP", icon: Blocks },
   { id: "rules", label: "Rules", icon: FileCode2 },
   { id: "skills", label: "Skills", icon: Sparkles },
@@ -391,32 +393,6 @@ export default function Settings({ onBack }: Props) {
                 </div>
               </section>
               <section className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-medium text-gray-300">模型</h3>
-                  <button onClick={fetchModels} disabled={loadingModels} className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-gray-400 transition hover:bg-gray-800 hover:text-white disabled:opacity-50">
-                    {loadingModels ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}获取可用模型
-                  </button>
-                </div>
-                {modelOptions.length > 0
-                  ? <SearchableSelect value={model} onChange={setModel} options={modelOptions} placeholder="选择模型..." />
-                  : <input type="text" value={model} onChange={(e) => setModel(e.target.value)} placeholder="auto" className={inputCls} />}
-              </section>
-              <section className="space-y-3">
-                <h3 className="text-sm font-medium text-gray-300">Agent 会话</h3>
-                <div className="flex items-center justify-between rounded-lg border border-gray-700 px-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium">每次开启新会话</p>
-                    <p className="text-xs text-gray-500">开启后 Agent 每次启动都会创建新会话，关闭则延续上一次会话</p>
-                  </div>
-                  <button
-                    onClick={() => setAgentNewSession(!agentNewSession)}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 ${agentNewSession ? "bg-green-500" : "bg-gray-600"}`}
-                  >
-                    <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform duration-200 ${agentNewSession ? "translate-x-[18px]" : "translate-x-[3px]"}`} />
-                  </button>
-                </div>
-              </section>
-              <section className="space-y-3">
                 <h3 className="text-sm font-medium text-gray-300">关闭主窗口</h3>
                 <p className="text-xs text-gray-600">点击窗口右上角关闭时的行为（可从系统托盘再次打开窗口）。</p>
                 <div className="space-y-2">
@@ -461,6 +437,38 @@ export default function Settings({ onBack }: Props) {
                   <input type="text" value={noProxy} onChange={(e) => setNoProxy(e.target.value)} placeholder="localhost,127.0.0.1" className={inputCls} />
                 </div>
               </section>
+            </>)}
+
+            {/* ═══ Agent ═══ */}
+            {tab === "agent" && (<>
+              <section className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-medium text-gray-300">模型</h3>
+                  <button onClick={fetchModels} disabled={loadingModels} className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-gray-400 transition hover:bg-gray-800 hover:text-white disabled:opacity-50">
+                    {loadingModels ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}获取可用模型
+                  </button>
+                </div>
+                {modelOptions.length > 0
+                  ? <SearchableSelect value={model} onChange={setModel} options={modelOptions} placeholder="选择模型..." />
+                  : <input type="text" value={model} onChange={(e) => setModel(e.target.value)} placeholder="auto" className={inputCls} />}
+              </section>
+              <section className="space-y-3">
+                <h3 className="text-sm font-medium text-gray-300">Agent 会话</h3>
+                <div className="flex items-center justify-between rounded-lg border border-gray-700 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium">每次开启新会话</p>
+                    <p className="text-xs text-gray-500">开启后 Agent 每次启动都会创建新会话，关闭则延续上一次会话</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAgentNewSession(!agentNewSession)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 ${agentNewSession ? "bg-green-500" : "bg-gray-600"}`}
+                  >
+                    <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform duration-200 ${agentNewSession ? "translate-x-[18px]" : "translate-x-[3px]"}`} />
+                  </button>
+                </div>
+              </section>
+              <p className="text-xs text-gray-500">以上选项自动保存；模型与会话相关项在下次启动 Agent 时生效。</p>
             </>)}
 
             {/* ═══ MCP ═══ */}

@@ -1,10 +1,16 @@
-import cron, { type ScheduledTask as CronJob } from "node-cron";
+import { CronExpressionParser } from "cron-parser";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
 const TASKS_DIR = path.join(os.homedir(), ".lark-bridge-mcp");
 const TASKS_FILE = path.join(TASKS_DIR, "scheduled-tasks.json");
+/** 轮询间隔：不依赖单次 setTimeout 链，避免锁屏/会话节流导致整点永不触发 */
+const WATCHDOG_MS = 5_000;
+/** 仅接受计划触发时刻距今不超过此时长（短时卡顿/锁屏补救）；睡眠过久唤醒后不补跑过期槽位 */
+const CATCHUP_MAX_MS = 30 * 60 * 1000;
+/** 单任务单次 tick 内最多向前迭代次数 */
+const MAX_FIRES_PER_TICK = 10_000;
 
 interface ScheduledTask {
   id: string;
@@ -14,7 +20,10 @@ interface ScheduledTask {
   enabled?: boolean;
 }
 
-const runningJobs = new Map<string, CronJob>();
+let scheduledTasksSnapshot: ScheduledTask[] = [];
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let lastWatchdogMs = 0;
+const firedSlotKeys = new Set<string>();
 let fileWatcher: fs.FSWatcher | null = null;
 let logFn: ((msg: string) => void) | null = null;
 
@@ -52,33 +61,99 @@ function readTasksFromFile(): ScheduledTask[] {
   }
 }
 
-function stopAllJobs(): void {
-  for (const [, job] of runningJobs) {
-    job.stop();
+function isValidCron(expression: string): boolean {
+  const trimmed = expression.trim();
+  if (!trimmed) {
+    return false;
   }
-  runningJobs.clear();
+  try {
+    CronExpressionParser.parse(trimmed, { currentDate: new Date() });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function scheduleTask(task: ScheduledTask, enqueue: (content: string) => void): void {
-  if (!task.enabled) {
+function collectDueCronFires(expression: string, rangeStartExclusive: Date, rangeEndInclusive: Date): Date[] {
+  const out: Date[] = [];
+  const startMs = rangeStartExclusive.getTime();
+  const endMs = rangeEndInclusive.getTime();
+  if (endMs <= startMs) {
+    return out;
+  }
+  let cursor = new Date(startMs + 1);
+  for (let i = 0; i < MAX_FIRES_PER_TICK; i++) {
+    let interval;
+    try {
+      interval = CronExpressionParser.parse(expression, { currentDate: cursor });
+    } catch {
+      return out;
+    }
+    const next = interval.next().toDate();
+    const nt = next.getTime();
+    if (nt > endMs) {
+      break;
+    }
+    if (nt > startMs) {
+      out.push(next);
+    }
+    cursor = new Date(nt + 1000);
+  }
+  return out;
+}
+
+function stopWatchdog(): void {
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+  lastWatchdogMs = 0;
+}
+/** 按时间窗口扫描应触发点；仅接受距今不超过 CATCHUP_MAX_MS 的槽位（过时即丢弃，避免睡眠唤醒后执行已失效任务）。 */
+function runWatchdogTick(enqueue: (content: string) => void): void {
+  if (scheduledTasksSnapshot.length === 0) {
     return;
   }
-  if (!cron.validate(task.cron)) {
-    log(`无效的 cron 表达式: "${task.cron}" (任务: ${task.name})`);
-    return;
+  const nowMs = Date.now();
+  const prevMs = lastWatchdogMs === 0 ? nowMs - WATCHDOG_MS : lastWatchdogMs;
+  const rangeStartExclusive = new Date(prevMs);
+  const rangeEndInclusive = new Date(nowMs);
+  lastWatchdogMs = nowMs;
+  for (const task of scheduledTasksSnapshot) {
+    if (!task.enabled) {
+      continue;
+    }
+    const expr = task.cron.trim();
+    let fires: Date[];
+    try {
+      fires = collectDueCronFires(expr, rangeStartExclusive, rangeEndInclusive);
+    } catch (e) {
+      log(`解析 cron 失败: ${task.name} — ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
+    for (const fireAt of fires) {
+      if (nowMs - fireAt.getTime() > CATCHUP_MAX_MS) {
+        continue;
+      }
+      const slotKey = `${task.id}:${fireAt.getTime()}`;
+      if (firedSlotKeys.has(slotKey)) {
+        continue;
+      }
+      firedSlotKeys.add(slotKey);
+      if (firedSlotKeys.size > 2_000) {
+        firedSlotKeys.clear();
+      }
+      const nowStr = fireAt.toLocaleString("zh-CN");
+      const message = `[定时任务: ${task.name}] (触发时间: ${nowStr})\n\n${task.content}`;
+      log(`触发: ${task.name}`);
+      enqueue(message);
+    }
   }
-  const job = cron.schedule(task.cron, () => {
-    const now = new Date().toLocaleString("zh-CN");
-    const message = `[定时任务: ${task.name}] (触发时间: ${now})\n\n${task.content}`;
-    log(`触发: ${task.name}`);
-    enqueue(message);
-  });
-  runningJobs.set(task.id, job);
-  log(`已注册: ${task.name} (${task.cron})`);
 }
 
 function reloadTasks(enqueue: (content: string) => void): void {
-  stopAllJobs();
+  stopWatchdog();
+  scheduledTasksSnapshot = [];
   const tasks = readTasksFromFile();
   const enabled = tasks.filter((t) => t.enabled);
   if (enabled.length === 0) {
@@ -86,9 +161,23 @@ function reloadTasks(enqueue: (content: string) => void): void {
     return;
   }
   log(`加载 ${enabled.length} 个定时任务`);
-  for (const task of tasks) {
-    scheduleTask(task, enqueue);
+  for (const task of enabled) {
+    if (!isValidCron(task.cron)) {
+      log(`无效的 cron 表达式: "${task.cron}" (任务: ${task.name})`);
+      continue;
+    }
+    scheduledTasksSnapshot.push(task);
+    log(`已注册: ${task.name} (${task.cron})`);
   }
+  if (scheduledTasksSnapshot.length === 0) {
+    log("无有效定时任务（表达式均无效）");
+    return;
+  }
+  lastWatchdogMs = 0;
+  watchdogTimer = setInterval(() => {
+    runWatchdogTick(enqueue);
+  }, WATCHDOG_MS);
+  runWatchdogTick(enqueue);
 }
 
 function stopFileWatcher(): void {
@@ -128,15 +217,17 @@ function startFileWatcher(enqueue: (content: string) => void): void {
 export function startDaemonScheduledTasks(enqueue: (content: string) => void): void {
   reloadTasks(enqueue);
   startFileWatcher(enqueue);
-  log(`调度器已启动 (${runningJobs.size} 个活跃任务)`);
+  log(`调度器已启动 (${scheduledTasksSnapshot.length} 个活跃任务，每 ${WATCHDOG_MS / 1000}s 时钟扫描)`);
 }
 
 export function stopDaemonScheduledTasks(): void {
-  const count = runningJobs.size;
-  stopAllJobs();
+  const count = scheduledTasksSnapshot.length;
+  stopWatchdog();
   stopFileWatcher();
+  scheduledTasksSnapshot = [];
+  firedSlotKeys.clear();
   if (count > 0) {
-    log(`调度器已停止 (${count} 个任务已取消)`);
+    log(`调度器已停止 (${count} 个任务已停止)`);
   }
 }
-
+

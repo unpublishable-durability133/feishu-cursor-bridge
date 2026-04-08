@@ -4,7 +4,7 @@ import * as path from "node:path"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import { promisify } from "node:util"
-import { app, BrowserWindow, ipcMain } from "electron"
+import { app, BrowserWindow, ipcMain, powerSaveBlocker } from "electron"
 import { getConfig, saveConfig, type AppConfig } from "./config-store"
 import { validateCron, readTasksFromFile, writeTasksToFile, previewCronNextRuns } from "./cron-scheduler"
 
@@ -458,9 +458,28 @@ function broadcastLog(message: string, level: string = "INFO"): void {
 const AGENT_STALE_TIMEOUT_MS = 10 * 60 * 1000
 let queueStaleStartTime: number | null = null
 
+let powerSaveBlockerId: number | null = null
+
+function startDaemonPowerSaveBlock(): void {
+  stopDaemonPowerSaveBlock()
+  try {
+    powerSaveBlockerId = powerSaveBlocker.start("prevent-app-suspension")
+  } catch { /* ignore */ }
+}
+
+function stopDaemonPowerSaveBlock(): void {
+  if (powerSaveBlockerId !== null) {
+    try {
+      powerSaveBlocker.stop(powerSaveBlockerId)
+    } catch { /* ignore */ }
+    powerSaveBlockerId = null
+  }
+}
+
 function startStatusPolling(): void {
   stopStatusPolling()
   queueStaleStartTime = null
+  startDaemonPowerSaveBlock()
   statusInterval = setInterval(async () => {
     const status = await getDaemonStatus()
     broadcastStatus(status)
@@ -497,6 +516,7 @@ function stopStatusPolling(): void {
     clearInterval(statusInterval)
     statusInterval = null
   }
+  stopDaemonPowerSaveBlock()
 }
 
 /**
