@@ -10,16 +10,8 @@ import semver from "semver"
 
 const execFileAsync = promisify(execFile)
 
-/** electron-updater 为 CJS，在 ESM 主进程里不能 `import { autoUpdater }`，需从 default 上取 */
 const autoUpdater: AppUpdater = (electronUpdater as { autoUpdater: AppUpdater }).autoUpdater
 
-/**
- * 主仓库 Releases 用于版本比对（与 electron-updater 的 publish 目标一致）：
- * https://github.com/lk-eternal/feishu-cursor-bridge
- *
- * macOS：Cask 来自第三方 Tap（README：brew tap lk-eternal/tap），Tap 仓库由主仓库 Actions 同步更新：
- * https://github.com/lk-eternal/homebrew-tap
- */
 const GITHUB_OWNER = "lk-eternal"
 const GITHUB_REPO = "feishu-cursor-bridge"
 const HOMEBREW_TAP = "lk-eternal/tap"
@@ -27,13 +19,8 @@ const HOMEBREW_CASK = "feishu-cursor-bridge"
 
 const STARTUP_CHECK_DELAY_MS = 4_000
 
-/** 开发模拟更新：恒大于 package.json 版本 */
 const DEV_FAKE_LATEST_VERSION = "99.99.99"
 
-/**
- * 未打包时设置 FEISHU_DEV_SIMULATE_UPDATE=1（或 true / yes），固定视为有新版本，用于测 UI / IPC；
- * 不会真实下载、不会执行 brew。示例：PowerShell `$env:FEISHU_DEV_SIMULATE_UPDATE="1"; npm run dev`
- */
 function isDevSimulateUpdate(): boolean {
   if (app.isPackaged) {
     return false
@@ -77,7 +64,6 @@ export interface UpdaterApplyResult {
 }
 
 let mainWindowGetter: (() => BrowserWindow | null) | null = null
-/** Windows：用户确认后下一次 update-available 时触发 download */
 let winDownloadRequested = false
 let lastKnownRemote: LatestRelease | null = null
 let autoUpdaterWired = false
@@ -558,10 +544,6 @@ export function registerUpdaterIpc(): void {
   })
 }
 
-/**
- * 初始化自动更新：绑定 electron-updater 事件、注册 IPC；
- * 打包后延迟启动检查；开发模式且 FEISHU_DEV_SIMULATE_UPDATE=1 时同样延迟检查（模拟有更新）。
- */
 export function initAppUpdater(getMainWindow: () => BrowserWindow | null): void {
   mainWindowGetter = getMainWindow
   registerUpdaterIpc()

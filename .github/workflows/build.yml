@@ -103,8 +103,6 @@ jobs:
           draft: false
           generate_release_notes: true
           overwrite_files: true
-          # 根本修复：下方 files 显式列出资源，避免 **/*.yml 等多余/重名资产；并行上传即可，不必强制顺序
-          # 勿用 **/*.yml，会带上 builder-debug.yml 等且可能与 latest.yml 争用同名资产
           files: |
             artifacts/**/feishu-cursor-bridge-setup-*.exe
             artifacts/**/*.dmg
@@ -123,7 +121,6 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Updating Homebrew cask to version $VERSION"
 
-          # 使用本 job 已下载的 macOS artifact 本地算 SHA256，避免 Releases API 无 digest / jq 对空 assets 报错
           INTEL_DMG="$(find artifacts -type f -name '*.dmg' ! -name '*arm64*' | head -n 1)"
           ARM_DMG="$(find artifacts -type f -name '*.dmg' -name '*arm64*' | head -n 1)"
 

@@ -1,8 +1,5 @@
 import { useEffect, useState } from "react"
 
-/**
- * 启动弹窗确认更新后，用户可能不在设置页；用底部条提示下载进度。
- */
 export default function UpdateDownloadBanner() {
   const [pct, setPct] = useState<number | null>(null)
 

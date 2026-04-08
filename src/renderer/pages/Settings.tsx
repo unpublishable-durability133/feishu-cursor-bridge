@@ -75,7 +75,6 @@ export default function Settings({ onBack }: Props) {
   const [updateBusy, setUpdateBusy] = useState(false)
   const [updateCheck, setUpdateCheck] = useState<Awaited<ReturnType<typeof window.electronAPI.checkAppUpdate>> | null>(null)
   const [updateMsg, setUpdateMsg] = useState<string | null>(null)
-  /** Windows electron-updater 下载中；与底部全局条同步，设置页内再显示进度条 */
   const [updateDownloadPct, setUpdateDownloadPct] = useState<number | null>(null)
 
   const [saved, setSaved] = useState(false)
