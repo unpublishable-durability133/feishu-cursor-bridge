@@ -3,6 +3,8 @@ import Setup from "./pages/Setup"
 import Dashboard from "./pages/Dashboard"
 import Settings from "./pages/Settings"
 import CloseWindowModal from "./components/CloseWindowModal"
+import AppModalHost from "./components/AppModalHost"
+import UpdateDownloadBanner from "./components/UpdateDownloadBanner"
 
 type Page = "setup" | "dashboard" | "settings"
 
@@ -63,6 +65,8 @@ export default function App() {
       <>
         <Setup onComplete={() => setPage("dashboard")} />
         <CloseWindowModal open={closeConfirmOpen} onClose={() => setCloseConfirmOpen(false)} />
+        <AppModalHost />
+        <UpdateDownloadBanner />
       </>
     )
   }
@@ -76,6 +80,8 @@ export default function App() {
         <Settings onBack={() => setPage("dashboard")} />
       )}
       <CloseWindowModal open={closeConfirmOpen} onClose={() => setCloseConfirmOpen(false)} />
+      <AppModalHost />
+      <UpdateDownloadBanner />
     </>
   )
 }

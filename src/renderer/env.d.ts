@@ -57,6 +57,17 @@ interface DaemonStatus {
   daemonWorkspaceDir?: string
 }
 
+interface AppModalRequestPayload {
+  requestId: string
+  title: string
+  message: string
+  detail?: string
+  buttons: string[]
+  defaultId?: number
+  cancelId?: number
+  variant?: "info" | "error" | "warning"
+}
+
 interface ConfigSaveResult {
   ok: boolean
   needWorkspaceDaemonChoice?: boolean
@@ -68,6 +79,23 @@ interface ConfigSaveResult {
 }
 
 interface ElectronAPI {
+  getAppVersion(): Promise<string>
+  checkAppUpdate(): Promise<
+    | { status: "dev"; currentVersion: string; message: string }
+    | { status: "error"; currentVersion: string; message: string }
+    | { status: "latest"; currentVersion: string; latestVersion: string }
+    | {
+        status: "available"
+        currentVersion: string
+        latestVersion: string
+        htmlUrl: string
+        applyHint: string
+      }
+  >
+  applyAppUpdate(): Promise<{ ok: boolean; error?: string; message?: string }>
+  onUpdaterProgress(cb: (percent: number) => void): () => void
+  onUpdaterError(cb: (message: string) => void): () => void
+  onUpdaterStatus(cb: (payload: { kind: "available" } | { kind: "downloaded" } | { kind: "downloading" }) => void): () => void
   getConfig(): Promise<AppConfig>
   saveConfig(config: Partial<AppConfig>): Promise<ConfigSaveResult>
   applyWorkspaceDaemonRestart(workspaceDir: string): Promise<{ ok: boolean; error?: string }>
@@ -109,6 +137,8 @@ interface ElectronAPI {
   onDaemonStatus(cb: (status: DaemonStatus) => void): () => void
   onDaemonLog(cb: (line: string) => void): () => void
   onWindowCloseConfirm(cb: () => void): () => void
+  onAppModalRequest(cb: (payload: AppModalRequestPayload) => void): () => void
+  respondAppModal(requestId: string, response: number): Promise<void>
 }
 
 declare global {

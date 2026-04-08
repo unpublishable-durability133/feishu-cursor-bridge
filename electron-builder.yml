@@ -2,6 +2,11 @@ appId: com.feishu-cursor-bridge.desktop
 productName: Feishu Cursor Bridge
 copyright: Copyright © 2026
 
+publish:
+  provider: github
+  owner: lk-eternal
+  repo: feishu-cursor-bridge
+
 directories:
   buildResources: resources
   output: release
@@ -31,6 +36,8 @@ extraResources:
 
 win:
   icon: resources/icon.png
+  # 与 GitHub Release 资源名一致，避免 latest.yml 指向错误路径导致 404（勿用带空格默认名与实际上传不一致）
+  artifactName: feishu-cursor-bridge-setup-${version}.${ext}
   target:
     - target: nsis
       arch:

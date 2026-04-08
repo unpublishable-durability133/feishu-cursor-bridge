@@ -71,9 +71,12 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: |
             release/*Setup*.exe
+            release/feishu-cursor-bridge-setup-*.exe
             release/*.dmg
             release/*.AppImage
             release/*.deb
+            release/*.yml
+            release/*.blockmap
           if-no-files-found: warn
           retention-days: 30
 
@@ -100,9 +103,12 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/**/*Setup*.exe
+            artifacts/**/feishu-cursor-bridge-setup-*.exe
             artifacts/**/*.dmg
             artifacts/**/*.AppImage
             artifacts/**/*.deb
+            artifacts/**/*.yml
+            artifacts/**/*.blockmap
 
       - name: Update Homebrew Tap
         if: success()

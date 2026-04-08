@@ -1,6 +1,6 @@
 {
   "name": "feishu-cursor-bridge",
-  "version": "2.4.7",
+  "version": "2.4.8",
   "description": "Feishu Cursor Bridge - 飞书 × Cursor 远程协作桌面应用",
   "keywords": [
     "mcp",
@@ -12,6 +12,10 @@
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lk-eternal/feishu-cursor-bridge.git"
+  },
   "type": "module",
   "main": "./out/main/index.js",
   "bin": {
@@ -34,8 +38,10 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "cron-parser": "^5.5.0",
     "electron-store": "^11.0.2",
+    "electron-updater": "^6.8.3",
     "lucide-react": "^0.577.0",
     "node-cron": "^4.2.1",
+    "semver": "^7.7.4",
     "zod": "^3.24.0"
   },
   "devDependencies": {
@@ -44,6 +50,7 @@
     "@types/node-cron": "^3.0.11",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/semver": "^7.7.1",
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "^41.0.3",
     "electron-builder": "^26.8.1",

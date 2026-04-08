@@ -69,6 +69,40 @@ export interface CliLoginStatus {
   error?: string
 }
 
+export type UpdaterCheckResult =
+  | { status: "dev"; currentVersion: string; message: string }
+  | { status: "error"; currentVersion: string; message: string }
+  | { status: "latest"; currentVersion: string; latestVersion: string }
+  | {
+      status: "available"
+      currentVersion: string
+      latestVersion: string
+      htmlUrl: string
+      applyHint: string
+    }
+
+export interface UpdaterApplyResult {
+  ok: boolean
+  error?: string
+  message?: string
+}
+
+export type UpdaterStatusPayload =
+  | { kind: "available" }
+  | { kind: "downloaded" }
+  | { kind: "downloading" }
+
+export interface AppModalRequestPayload {
+  requestId: string
+  title: string
+  message: string
+  detail?: string
+  buttons: string[]
+  defaultId?: number
+  cancelId?: number
+  variant?: "info" | "error" | "warning"
+}
+
 export interface McpServerEntry {
   name: string
   type: "command" | "url"
@@ -82,6 +116,24 @@ export interface McpServerEntry {
 }
 
 const api = {
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke("updater:current-version"),
+  checkAppUpdate: (): Promise<UpdaterCheckResult> => ipcRenderer.invoke("updater:check"),
+  applyAppUpdate: (): Promise<UpdaterApplyResult> => ipcRenderer.invoke("updater:apply"),
+  onUpdaterProgress: (cb: (percent: number) => void): (() => void) => {
+    const handler = (_: unknown, percent: number) => cb(percent)
+    ipcRenderer.on("updater:progress", handler)
+    return () => ipcRenderer.removeListener("updater:progress", handler)
+  },
+  onUpdaterError: (cb: (message: string) => void): (() => void) => {
+    const handler = (_: unknown, message: string) => cb(message)
+    ipcRenderer.on("updater:error", handler)
+    return () => ipcRenderer.removeListener("updater:error", handler)
+  },
+  onUpdaterStatus: (cb: (payload: UpdaterStatusPayload) => void): (() => void) => {
+    const handler = (_: unknown, payload: UpdaterStatusPayload) => cb(payload)
+    ipcRenderer.on("updater:status", handler)
+    return () => ipcRenderer.removeListener("updater:status", handler)
+  },
   getConfig: (): Promise<AppConfig> => ipcRenderer.invoke("config:get"),
   saveConfig: (config: Partial<AppConfig>): Promise<ConfigSaveResult> => ipcRenderer.invoke("config:save", config),
   applyWorkspaceDaemonRestart: (workspaceDir: string): Promise<{ ok: boolean; error?: string }> =>
@@ -142,6 +194,13 @@ const api = {
     ipcRenderer.on("window:close-confirm", handler)
     return () => ipcRenderer.removeListener("window:close-confirm", handler)
   },
+  onAppModalRequest: (cb: (payload: AppModalRequestPayload) => void) => {
+    const handler = (_: unknown, payload: AppModalRequestPayload) => cb(payload)
+    ipcRenderer.on("app:modal-request", handler)
+    return () => ipcRenderer.removeListener("app:modal-request", handler)
+  },
+  respondAppModal: (requestId: string, response: number): Promise<void> =>
+    ipcRenderer.invoke("app:modal-result", { requestId, response }),
 }
 
 contextBridge.exposeInMainWorld("electronAPI", api)

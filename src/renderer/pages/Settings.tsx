@@ -22,6 +22,7 @@ import {
   Timer,
   Sparkles,
   Bot,
+  Download,
 } from "lucide-react"
 import SearchableSelect from "../components/SearchableSelect"
 import WorkspaceDaemonModal from "../components/WorkspaceDaemonModal"
@@ -70,6 +71,13 @@ export default function Settings({ onBack }: Props) {
   const [closeWindowAction, setCloseWindowAction] = useState<CloseWindowAction>("ask")
   const [workspaceDaemonChoice, setWorkspaceDaemonChoice] = useState<{ old: string; new: string } | null>(null)
 
+  const [appVersion, setAppVersion] = useState("")
+  const [updateBusy, setUpdateBusy] = useState(false)
+  const [updateCheck, setUpdateCheck] = useState<Awaited<ReturnType<typeof window.electronAPI.checkAppUpdate>> | null>(null)
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null)
+  /** Windows electron-updater 下载中；与底部全局条同步，设置页内再显示进度条 */
+  const [updateDownloadPct, setUpdateDownloadPct] = useState<number | null>(null)
+
   const [saved, setSaved] = useState(false)
   const [modelOptions, setModelOptions] = useState<{ id: string; label: string }[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
@@ -117,6 +125,35 @@ export default function Settings({ onBack }: Props) {
   const refreshTasks = useCallback(() => { window.electronAPI.getScheduledTasks().then(setTasks) }, [])
 
   useEffect(() => {
+    void window.electronAPI.getAppVersion().then(setAppVersion)
+  }, [])
+
+  useEffect(() => {
+    const offS = window.electronAPI.onUpdaterStatus((s) => {
+      if (s.kind === "downloading") {
+        setUpdateDownloadPct(0)
+      }
+      if (s.kind === "downloaded") {
+        setUpdateDownloadPct(null)
+      }
+    })
+    const offP = window.electronAPI.onUpdaterProgress((pct) => {
+      const p = Math.round(pct)
+      setUpdateDownloadPct(p)
+      setUpdateMsg(`正在下载更新… ${p}%`)
+    })
+    const offE = window.electronAPI.onUpdaterError((m) => {
+      setUpdateDownloadPct(null)
+      setUpdateMsg((prev) => (prev ? `${prev}\n${m}` : m))
+    })
+    return () => {
+      offS()
+      offP()
+      offE()
+    }
+  }, [])
+
+  useEffect(() => {
     window.electronAPI.getConfig().then((config) => {
       setAppId(config.larkAppId); setAppSecret(config.larkAppSecret)
       setReceiveId(config.larkReceiveId); setIdType(config.larkReceiveIdType)
@@ -160,6 +197,48 @@ export default function Settings({ onBack }: Props) {
   }, [appId, appSecret, receiveId, idType, workspaceDir, model, proxy, noProxy, agentNewSession, closeWindowAction, refreshMcpServers])
 
   useEffect(() => { autoSave() }, [autoSave])
+
+  const handleCheckUpdate = async () => {
+    setUpdateBusy(true)
+    setUpdateMsg(null)
+    setUpdateCheck(null)
+    setUpdateDownloadPct(null)
+    try {
+      const r = await window.electronAPI.checkAppUpdate()
+      setUpdateCheck(r)
+      if (r.status === "latest") {
+        setUpdateMsg(`已是最新 v${r.latestVersion}。`)
+      } else if (r.status === "dev") {
+        setUpdateMsg(r.message)
+      } else if (r.status === "error") {
+        setUpdateMsg(r.message)
+      } else if (r.status === "available") {
+        setUpdateMsg(`发现新版本 v${r.latestVersion}，当前 v${r.currentVersion}。`)
+      }
+    } finally {
+      setUpdateBusy(false)
+    }
+  }
+
+  const handleApplyUpdate = async () => {
+    setUpdateBusy(true)
+    setUpdateMsg("正在连接更新服务器…")
+    try {
+      const res = await window.electronAPI.applyAppUpdate()
+      if (res.ok) {
+        setUpdateMsg(res.message ?? "已触发更新流程。")
+        if (res.message === "正在下载…") {
+          setUpdateDownloadPct(0)
+        }
+        setUpdateCheck(null)
+      } else {
+        setUpdateDownloadPct(null)
+        setUpdateMsg(res.error ?? "更新失败")
+      }
+    } finally {
+      setUpdateBusy(false)
+    }
+  }
 
   const taskModalOpen = taskEditing !== null
   const taskIdForCronPreview = taskEditing?.id ?? ""
@@ -403,6 +482,47 @@ export default function Settings({ onBack }: Props) {
                 <div onClick={selectDir} className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-700 px-4 py-3 transition hover:border-blue-500">
                   <FolderOpen size={18} className="text-blue-400" /><span className="truncate text-sm">{workspaceDir || "点击选择..."}</span>
                 </div>
+              </section>
+              <section className="space-y-3">
+                <h3 className="text-sm font-medium text-gray-300">应用更新</h3>
+                <p className="text-xs text-gray-600">
+                  当前 <span className="font-mono text-gray-400">v{appVersion || "…"}</span>
+                  ，可检查是否有新版本。
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={updateBusy || updateDownloadPct !== null}
+                    onClick={() => void handleCheckUpdate()}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-600 bg-gray-800/50 px-4 py-2 text-sm transition hover:border-blue-500 hover:bg-gray-800 disabled:opacity-50"
+                  >
+                    {updateBusy ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                    检查更新
+                  </button>
+                  {updateCheck?.status === "available" && (
+                    <button
+                      type="button"
+                      disabled={updateBusy || updateDownloadPct !== null}
+                      onClick={() => void handleApplyUpdate()}
+                      className="inline-flex items-center gap-2 rounded-lg border border-blue-500 bg-blue-500/15 px-4 py-2 text-sm text-blue-200 transition hover:bg-blue-500/25 disabled:opacity-50"
+                    >
+                      立即更新
+                    </button>
+                  )}
+                </div>
+                {updateMsg && (
+                  <div className="space-y-2">
+                    <p className="whitespace-pre-wrap rounded-lg border border-gray-700 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">{updateMsg}</p>
+                    {updateDownloadPct !== null && (
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-800">
+                        <div
+                          className="h-full rounded-full bg-blue-500 transition-[width] duration-300 ease-out"
+                          style={{ width: `${updateDownloadPct <= 0 ? 6 : updateDownloadPct}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
               </section>
               <section className="space-y-3">
                 <h3 className="text-sm font-medium text-gray-300">关闭主窗口</h3>

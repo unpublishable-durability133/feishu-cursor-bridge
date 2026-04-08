@@ -28,6 +28,7 @@ import {
 } from "./daemon-manager"
 import { injectWorkspace } from "./workspace-injector"
 import { initTray, destroyTray } from "./tray"
+import { initAppUpdater } from "./updater"
 
 let mainWindow: BrowserWindow | null = null
 let closeConfirmDialogOpen = false
@@ -271,6 +272,7 @@ app.on("before-quit", () => {
 app.whenReady().then(() => {
   registerIpcHandlers()
   createWindow()
+  initAppUpdater(() => mainWindow)
   initTray()
   initDaemonManager()
 })
