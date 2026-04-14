@@ -21,7 +21,10 @@ import {
   loginMcpServer,
   toggleMcpServer,
   getMcpEnabledMap,
+  clearMessageQueue,
   execAgentSync,
+  applyProxyEnv,
+  parseListModelsStdout,
   initDaemonManager,
   cleanupDaemonManager,
   saveAppConfigFromRenderer,
@@ -149,6 +152,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("logs:read", (_, lines) => readLogs(lines))
   ipcMain.handle("logs:clear", () => clearLogs())
   ipcMain.handle("daemon:queue", () => getQueueMessages())
+  ipcMain.handle("daemon:queue-clear", () => clearMessageQueue())
   ipcMain.handle("cli:check", () => checkCliInstalled())
   ipcMain.handle("cli:login-status", () => checkAgentLoggedIn())
   ipcMain.handle("cli:install", () => installCli())
@@ -165,7 +169,7 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle("mcp:login", (_, name: string) => loginMcpServer(name))
   ipcMain.handle("mcp:toggle", (_, name: string, enabled: boolean) => toggleMcpServer(name, enabled))
-  ipcMain.handle("mcp:enabled-map", () => getMcpEnabledMap())
+  ipcMain.handle("mcp:enabled-map", (_, force?: boolean) => getMcpEnabledMap(force ?? false))
 
   ipcMain.handle("rules:list", () => {
     const config = getConfig()
@@ -227,39 +231,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle("models:list", () => {
     const config = getConfig()
     const env: Record<string, string> = { ...process.env as Record<string, string>, NODE_USE_ENV_PROXY: "1" }
-    if (config.httpProxy) {
-      env.HTTP_PROXY = config.httpProxy
-      env.http_proxy = config.httpProxy
-    }
-    if (config.httpsProxy) {
-      env.HTTPS_PROXY = config.httpsProxy
-      env.https_proxy = config.httpsProxy
-      env.ALL_PROXY = config.httpsProxy
-      env.all_proxy = config.httpsProxy
-    }
-    if (config.noProxy) {
-      env.NO_PROXY = config.noProxy
-      env.no_proxy = config.noProxy
-    }
+    applyProxyEnv(env, config)
     const ws = config.workspaceDir?.trim() || undefined
     const run = execAgentSync(["--list-models"], env, { timeoutMs: 30_000, logLabel: "list-models", cwd: ws })
     if (!run.ok) {
       return { ok: false, models: [], error: run.error || run.stderr.trim() || "获取模型列表失败" }
     }
-    const out = run.stdout.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\r/g, "")
-    const models: { id: string; label: string; current: boolean }[] = []
-    for (const line of out.split("\n")) {
-      const trimmed = line.trim()
-      if (!trimmed || /^available models/i.test(trimmed)) continue
-      let match = trimmed.match(/^(\S+)\s+[–—-]\s+(.+?)(\s+\((?:default|current)\))?\s*$/)
-      if (!match) {
-        match = trimmed.match(/^(\S+)\s+-\s+(.+?)(\s+\((?:default|current)\))?\s*$/)
-      }
-      if (match) {
-        models.push({ id: match[1], label: match[2].trim(), current: !!match[3] })
-      }
-    }
-    return { ok: true, models }
+    return { ok: true, models: parseListModelsStdout(run.stdout) }
   })
 }
 

@@ -73,12 +73,12 @@ export default function App() {
 
   return (
     <>
-      {page === "dashboard" && (
+      <div className={page === "dashboard" ? undefined : "hidden"}>
         <Dashboard onSettings={() => setPage("settings")} />
-      )}
-      {page === "settings" && (
+      </div>
+      <div className={page === "settings" ? undefined : "hidden"}>
         <Settings onBack={() => setPage("dashboard")} />
-      )}
+      </div>
       <CloseWindowModal open={closeConfirmOpen} onClose={() => setCloseConfirmOpen(false)} />
       <AppModalHost />
       <UpdateDownloadBanner />

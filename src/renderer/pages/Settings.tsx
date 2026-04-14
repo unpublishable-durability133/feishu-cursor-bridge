@@ -106,18 +106,16 @@ export default function Settings({ onBack }: Props) {
   const cronPreviewTaskIdRef = useRef("")
 
   const loaded = useRef(false)
-  const mcpLoaded = useRef(false)
+  const initialLoadDone = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout>>()
 
   const refreshMcpServers = useCallback(async (force = false) => {
-    if (mcpLoaded.current && !force) return
     const servers = await window.electronAPI.getMcpServers()
     setMcpServers(servers)
     setMcpStatusLoading(true)
-    const enabled = await window.electronAPI.getMcpEnabledMap()
+    const enabled = await window.electronAPI.getMcpEnabledMap(force)
     setMcpServers((prev) => prev.map((s) => ({ ...s, enabled: enabled[s.name] ?? false })))
     setMcpStatusLoading(false)
-    mcpLoaded.current = true
   }, [])
   const refreshRules = useCallback(() => { window.electronAPI.getRules().then(setRules) }, [])
   const refreshSkills = useCallback(() => { window.electronAPI.getSkills().then(setSkills) }, [])
@@ -171,6 +169,10 @@ export default function Settings({ onBack }: Props) {
 
   const autoSave = useCallback(() => {
     if (!loaded.current) return
+    if (!initialLoadDone.current) {
+      initialLoadDone.current = true
+      return
+    }
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(async () => {
       const r = await window.electronAPI.saveConfig({

@@ -62,10 +62,11 @@ export function getConfig(): AppConfig {
 }
 
 export function saveConfig(partial: Partial<AppConfig>): void {
-  for (const [key, value] of Object.entries(partial)) {
-    if (value !== undefined) {
-      store.set(key as keyof AppConfig, value as never)
-    }
+  const cleaned = Object.fromEntries(
+    Object.entries(partial).filter(([, v]) => v !== undefined),
+  )
+  if (Object.keys(cleaned).length > 0) {
+    store.set(cleaned as Partial<AppConfig>)
   }
 }
 

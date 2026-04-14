@@ -10,6 +10,7 @@ import {
   MessageSquare,
   Clock,
   Loader2,
+  Trash2,
   Activity,
   Download,
   LogIn,
@@ -33,6 +34,7 @@ export default function Dashboard({ onSettings }: Props) {
   const [cliLoggingIn, setCliLoggingIn] = useState(false)
   const [cliMessage, setCliMessage] = useState("")
   const [stoppingAgent, setStoppingAgent] = useState(false)
+  const [clearingQueue, setClearingQueue] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
@@ -229,6 +231,15 @@ export default function Dashboard({ onSettings }: Props) {
     setShowQueue(!showQueue)
   }
 
+  const handleClearQueue = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setClearingQueue(true)
+    await window.electronAPI.clearQueueMessages()
+    setQueueMessages([])
+    setStatus((prev) => ({ ...prev, queueLength: 0 }))
+    setClearingQueue(false)
+  }
+
   const formatUptime = (seconds?: number): string => {
     if (!seconds) return "-"
     const h = Math.floor(seconds / 3600)
@@ -341,6 +352,17 @@ export default function Dashboard({ onSettings }: Props) {
             value={String(status.queueLength ?? 0)}
             color={status.queueLength ? "yellow" : "gray"}
             sub={status.queueLength ? "点击查看详情" : "待处理消息"}
+            action={status.queueLength ? (
+              <button
+                onClick={handleClearQueue}
+                disabled={clearingQueue}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-400 transition hover:bg-red-600/20 disabled:opacity-50"
+                title="清空队列"
+              >
+                {clearingQueue ? <Loader2 size={10} className="animate-spin" /> : <Trash2 size={10} />}
+                清空
+              </button>
+            ) : undefined}
           />
         </div>
       </div>
@@ -446,13 +468,48 @@ export default function Dashboard({ onSettings }: Props) {
             )}
           </div>
         </div>
-        <pre
+        <div
           ref={logRef}
-          className="flex-1 overflow-auto rounded-lg border border-gray-800 bg-gray-900/50 p-3 font-mono text-xs leading-5 text-gray-400"
+          className="flex-1 overflow-auto rounded-lg border border-gray-800 bg-gray-900/50 p-3 font-mono text-xs leading-5"
         >
-          {logs || "暂无日志"}
-        </pre>
+          {logs ? logs.split("\n").map((line, i) => <LogLine key={i} line={line} />) : <span className="text-gray-600">暂无日志</span>}
+        </div>
       </div>
+    </div>
+  )
+}
+
+const LOG_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) \[(\w+)\] (\w+) (.*)$/
+
+const LEVEL_COLORS: Record<string, string> = {
+  ERROR: "text-red-400",
+  WARN: "text-yellow-400",
+  INFO: "text-blue-400",
+  DEBUG: "text-gray-500",
+}
+
+const PROCESS_COLORS: Record<string, string> = {
+  Daemon: "text-purple-400",
+  Agent: "text-cyan-400",
+  Electron: "text-orange-400",
+  Scheduler: "text-teal-400",
+}
+
+function LogLine({ line }: { line: string }) {
+  const m = LOG_RE.exec(line)
+  if (!m) {
+    return <div className="whitespace-pre-wrap break-all text-gray-400">{line}</div>
+  }
+  const [, ts, proc, level, msg] = m
+  return (
+    <div className="whitespace-pre-wrap break-all">
+      <span className="text-gray-600">{ts}</span>
+      {" "}
+      <span className={PROCESS_COLORS[proc] ?? "text-gray-400"}>[{proc}]</span>
+      {" "}
+      <span className={LEVEL_COLORS[level] ?? "text-gray-400"}>{level}</span>
+      {" "}
+      <span className={level === "ERROR" ? "text-red-300" : level === "WARN" ? "text-yellow-300" : "text-gray-300"}>{msg}</span>
     </div>
   )
 }

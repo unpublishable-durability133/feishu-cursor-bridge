@@ -111,6 +111,7 @@ interface ElectronAPI {
   getLogBuffer(): Promise<string[]>
   clearLogs(): Promise<void>
   getQueueMessages(): Promise<{ index: number; preview: string }[]>
+  clearQueueMessages(): Promise<number>
   checkCli(): Promise<boolean>
   checkCliLogin(): Promise<CliLoginStatus>
   installCli(): Promise<{ ok: boolean; output: string }>
@@ -126,7 +127,7 @@ interface ElectronAPI {
   deleteMcpServer(name: string): Promise<{ ok: boolean }>
   loginMcp(name: string): Promise<{ ok: boolean; output: string }>
   toggleMcp(name: string, enabled: boolean): Promise<{ ok: boolean; output: string }>
-  getMcpEnabledMap(): Promise<Record<string, boolean>>
+  getMcpEnabledMap(force?: boolean): Promise<Record<string, boolean>>
   getRules(): Promise<{ name: string; content: string }[]>
   saveRule(name: string, content: string): Promise<{ ok: boolean }>
   deleteRule(name: string): Promise<{ ok: boolean }>

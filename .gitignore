@@ -6,7 +6,6 @@ dist/
 dist-bundle/
 out/
 release/
-lite/dist/
 
 # Package archives
 *.tgz

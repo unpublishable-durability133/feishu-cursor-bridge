@@ -272,7 +272,7 @@ const PROXY_ENV_KEYS = [
   "NO_PROXY", "no_proxy",
 ] as const
 
-function applyProxyEnv(env: Record<string, string>, config: { httpProxy?: string; httpsProxy?: string; noProxy?: string }): void {
+export function applyProxyEnv(env: Record<string, string>, config: { httpProxy?: string; httpsProxy?: string; noProxy?: string }): void {
   for (const key of PROXY_ENV_KEYS) delete env[key]
   if (config.httpProxy) {
     env.HTTP_PROXY = config.httpProxy
@@ -548,7 +548,7 @@ async function pullMergedMessagesFromQueue(): Promise<{ text: string; count: num
   }
 }
 
-async function clearMessageQueue(): Promise<number> {
+export async function clearMessageQueue(): Promise<number> {
   const lock = readLockFile()
   if (!lock?.port) return 0
   try {
@@ -1270,8 +1270,8 @@ export function launchAgent(initialMessage?: string): { ok: boolean; error?: str
   if (!resolveAgentBinary()) return { ok: false, error: "Cursor CLI 未安装" }
 
   const prompt = initialMessage
-    ? `请遵守飞书工作流规则feishu-cursor-bridge开始工作,以下是用户通过飞书发来的消息，请直接处理，不要发送问候语：\n\n${initialMessage}`
-    : "请遵守飞书工作流规则feishu-cursor-bridge开始工作,先获取待处理的飞书消息，然后根据消息内容开始工作。不要发送问候消息。"
+    ? `请遵守飞书工作流规则feishu-cursor-bridge开始工作,以下是用户通过飞书发来的消息：\n\n${initialMessage}`
+    : "请遵守飞书工作流规则feishu-cursor-bridge开始工作,先获取待处理的飞书消息，然后根据消息内容开始工作。"
   const skipContinueOnce = config.agentSkipContinueNextLaunch === true
   const includeContinue = !config.agentNewSession && !skipContinueOnce
   const args = buildAgentLaunchArgs(config, prompt, includeContinue)
@@ -1305,6 +1305,144 @@ async function reportCommandResult(port: number, messageId: string, ok: boolean,
   } catch (e: unknown) {
     broadcastLog(`指令结果回报失败: ${e instanceof Error ? e.message : e}`, "WARN")
   }
+}
+
+const MODEL_SUBCMD_HELP =
+  "💡 /model 子命令\n" +
+  "🔹 /model ls — 列出可用模型与序号\n" +
+  "🔹 /model info — 查看当前应用配置的模型\n" +
+  "🔹 /model set <序号> — 按 /model ls 的 # 设置模型（写入配置，下次启动 Agent 生效）"
+
+type ListedModel = { id: string; label: string; current: boolean }
+
+export function parseListModelsStdout(out: string): ListedModel[] {
+  const cleaned = out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\r/g, "")
+  const models: ListedModel[] = []
+  for (const line of cleaned.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed || /^available models/i.test(trimmed)) {
+      continue
+    }
+    const match = trimmed.match(/^(\S+)\s+[–—-]\s+(.+?)(\s+\((?:default|current)\))?\s*$/)
+    if (match) {
+      models.push({ id: match[1], label: match[2].trim(), current: !!match[3] })
+    }
+  }
+  return models
+}
+
+function listCursorModelsForCommands(): { ok: true; models: ListedModel[] } | { ok: false; error: string } {
+  const config = getConfig()
+  const env: Record<string, string> = { ...process.env as Record<string, string>, NODE_USE_ENV_PROXY: "1" }
+  applyProxyEnv(env, config)
+  const ws = config.workspaceDir?.trim() || undefined
+  const run = execAgentSync(["--list-models"], env, { timeoutMs: 30_000, logLabel: "list-models-cmd", cwd: ws })
+  if (!run.ok) {
+    return { ok: false, error: run.error || run.stderr.trim() || "获取模型列表失败" }
+  }
+  const models = parseListModelsStdout(run.stdout)
+  if (models.length === 0) {
+    return { ok: false, error: "未解析到任何模型，请检查 agent --list-models 输出格式是否变化" }
+  }
+  return { ok: true, models }
+}
+
+async function handleFeishuModelCommand(port: number, messageId: string, raw: string): Promise<void> {
+  const parts = raw.trim().split(/\s+/).filter((p) => p.length > 0)
+  const low = (s: string) => s.toLowerCase()
+
+  if (parts.length <= 1) {
+    await reportCommandResult(port, messageId, true, MODEL_SUBCMD_HELP)
+    return
+  }
+
+  const sub = low(parts[1])
+  if (sub === "help" || sub === "-h" || sub === "--help") {
+    await reportCommandResult(port, messageId, true, MODEL_SUBCMD_HELP)
+    return
+  }
+
+  if (sub === "info") {
+    const cfgModel = getConfig().model?.trim() || "auto"
+    const lines: string[] = [`📝 应用配置 model: ${cfgModel}`]
+    if (cfgModel === "auto") {
+      lines.push("（auto：启动 Agent 时不传 --model，由 CLI 默认策略选择）")
+    }
+    const lr = listCursorModelsForCommands()
+    if (lr.ok) {
+      const hit = lr.models.findIndex((m) => m.id === cfgModel)
+      if (hit >= 0) {
+        lines.push(`对应列表序号: #${hit + 1}`)
+        lines.push(`   ${lr.models[hit].id} — ${lr.models[hit].label}`)
+      } else if (cfgModel !== "auto") {
+        lines.push("（当前配置 id 不在本次 CLI 列表中，若刚换模型列表可再执行 /model ls）")
+      }
+      const cliCur = lr.models.filter((m) => m.current)
+      if (cliCur.length > 0) {
+        lines.push(`CLI --list-models 标注 (current): ${cliCur.map((m) => m.id).join(", ")}`)
+      }
+    } else {
+      lines.push(`⚠️ 无法拉取 CLI 模型列表: ${lr.error}`)
+    }
+    await reportCommandResult(port, messageId, true, lines.join("\n"))
+    return
+  }
+
+  if (sub === "ls") {
+    const lr = listCursorModelsForCommands()
+    if (!lr.ok) {
+      await reportCommandResult(port, messageId, false, `❌ ${lr.error}`)
+      return
+    }
+    const blocks = lr.models.map((m, i) => {
+      const n = i + 1
+      const tag = m.current ? "  ⭐CLI current" : ""
+      return [`#${n}`, `\t id · ${m.id}`, `\t说明 · ${m.label}${tag}`].join("\n")
+    })
+    const body = [`🧠 模型列表（共 ${lr.models.length} 个）`, "", ...blocks, "", "💡 设置：/model set <序号>"].join("\n")
+    await reportCommandResult(port, messageId, true, body)
+    return
+  }
+
+  if (sub === "set") {
+    const lr = listCursorModelsForCommands()
+    if (!lr.ok) {
+      await reportCommandResult(port, messageId, false, `❌ ${lr.error}`)
+      return
+    }
+    if (parts.length < 3) {
+      await reportCommandResult(port, messageId, false, "💡 用法：/model set <序号>（数字见 /model ls 的 #）")
+      return
+    }
+    const idx = parseInt(parts[2], 10)
+    if (!Number.isInteger(idx) || idx < 1 || idx > lr.models.length) {
+      await reportCommandResult(
+        port,
+        messageId,
+        false,
+        `😅 序号须为 1～${lr.models.length} 之间的整数（先 /model ls）`,
+      )
+      return
+    }
+    const picked = lr.models[idx - 1]
+    saveConfig({ model: picked.id })
+    await reportCommandResult(
+      port,
+      messageId,
+      true,
+      [
+        `✅ 已保存模型（下次启动 Agent 生效）`,
+        ` # · ${idx}`,
+        ` id · ${picked.id}`,
+        `说明 · ${picked.label}`,
+        "",
+        "若 Agent 正在运行，可 /stop 后由新消息再拉起以使用新模型。",
+      ].join("\n"),
+    )
+    return
+  }
+
+  await reportCommandResult(port, messageId, false, `😅 未知子命令: ${parts[1]}\n\n${MODEL_SUBCMD_HELP}`)
 }
 
 const TASK_SUBCMD_HELP =
@@ -1602,9 +1740,9 @@ async function handleFeishuTaskCommand(port: number, messageId: string, raw: str
     tasks = tasks.map((x, j) => (j === pu.oneBasedIndex - 1 ? updated : x))
     writeTasksToFile(tasks)
 
-    const statusLine = formatTaskStatusLine(t.enabled)
+    const statusLine = formatTaskStatusLine(updated.enabled)
     let scheduleSection: string
-    const prev = previewCronNextRuns(t.cron)
+    const prev = previewCronNextRuns(updated.cron)
     if (prev.ok) {
       const lines = prev.runs.map((r, i) => `   ${taskPreviewBullet(i)} ${r}`)
       scheduleSection = `⏱️ 最近计划触发（${prev.runs.length} 次预览）\n${lines.join("\n")}`
@@ -1615,14 +1753,14 @@ async function handleFeishuTaskCommand(port: number, messageId: string, raw: str
       `✅ 已更新任务`,
       `📋 任务详情  #${pu.oneBasedIndex}`,
       "",
-      `📝 名称 · ${t.name}`,
+      `📝 名称 · ${updated.name}`,
       `💠 状态 · ${statusLine}`,
-      `🔄 Cron · ${t.cron}`,
+      `🔄 Cron · ${updated.cron}`,
       scheduleSection,
       "",
       "✉️ 任务内容",
       "────────────",
-      t.content,
+      updated.content,
     ].join("\n")
     await reportCommandResult(port, messageId, true, body)
     return
@@ -1700,6 +1838,16 @@ async function checkAndExecutePendingCommands(): Promise<void> {
           break
         }
 
+        case "/model": {
+          await handleFeishuModelCommand(lock.port, claimed.messageId, rawCmd)
+          break
+        }
+
+        case "/mcp": {
+          await handleFeishuMcpCommand(lock.port, claimed.messageId, rawCmd)
+          break
+        }
+
         case "/restart": {
           stopAgent()
           const cleared = await clearMessageQueue()
@@ -1744,6 +1892,8 @@ async function checkAndExecutePendingCommands(): Promise<void> {
             "🔹 /list 消息队列",
             "🔹 /clean 清空队列",
             "🔹 /task 定时任务",
+            "🔹 /model 模型设置",
+            "🔹 /mcp MCP服务器管理",
             "🔹 /help 指令列表",
           ]
           await reportCommandResult(lock.port, claimed.messageId, true, helpLines.join("\n"))
@@ -1838,11 +1988,17 @@ export interface McpServerEntry {
   enabled?: boolean
 }
 
-function spawnAsync(args: string[], cwd: string, env: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
+function spawnAsync(args: string[], cwd: string, env: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string; timedOut?: boolean }> {
   return new Promise((resolve) => {
     const mcpLabel = args.length >= 2 && args[0] === "mcp" ? `mcp-${args[1]}` : `mcp-${args[0] ?? "spawn"}`
     logCursorAgentInvocation(mcpLabel, args, cwd)
-    let stdout = "", stderr = ""
+    let stdout = "", stderr = "", settled = false, didTimeout = false
+    const done = (code: number) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ code, stdout, stderr, timedOut: didTimeout || undefined })
+    }
     const child = agentNodePath && agentIndexPath
       ? spawn(agentNodePath, [agentIndexPath, ...args], {
           windowsHide: true, stdio: ["ignore", "pipe", "pipe"], cwd, env,
@@ -1852,9 +2008,9 @@ function spawnAsync(args: string[], cwd: string, env: Record<string, string>): P
         })
     child.stdout?.on("data", (d: Buffer) => { stdout += d.toString() })
     child.stderr?.on("data", (d: Buffer) => { stderr += d.toString() })
-    child.on("error", () => resolve({ code: 1, stdout, stderr }))
-    child.on("exit", (code) => resolve({ code: code ?? 1, stdout, stderr }))
-    setTimeout(() => { try { child.kill() } catch { /* */ }; resolve({ code: 1, stdout, stderr }) }, 10_000)
+    child.on("error", () => done(1))
+    child.on("exit", (code) => done(code ?? 1))
+    const timer = setTimeout(() => { didTimeout = true; try { child.kill() } catch { /* */ }; done(1) }, 10_000)
   })
 }
 
@@ -1865,13 +2021,23 @@ function isEnabledStatus(status: string): boolean {
   return s !== "disabled" && !s.includes("not loaded")
 }
 
-/** 合并并发 `mcp list`，避免启动时 StrictMode 双 effect 等导致同一时刻两次 CLI */
+const MCP_ENABLED_CACHE_TTL_MS = 30_000
+let mcpEnabledCache: { data: Record<string, boolean>; ts: number; ws: string } | null = null
 let getMcpEnabledMapInFlight: Promise<Record<string, boolean>> | null = null
 
-export async function getMcpEnabledMap(): Promise<Record<string, boolean>> {
+export async function getMcpEnabledMap(force = false): Promise<Record<string, boolean>> {
   const config = getConfig()
-  if (!config.workspaceDir || !resolveAgentBinary()) {
+  const ws = (config.workspaceDir || "").trim()
+  if (!ws || !resolveAgentBinary()) {
     return {}
+  }
+  if (
+    !force &&
+    mcpEnabledCache &&
+    mcpEnabledCache.ws === ws &&
+    Date.now() - mcpEnabledCache.ts < MCP_ENABLED_CACHE_TTL_MS
+  ) {
+    return mcpEnabledCache.data
   }
   if (getMcpEnabledMapInFlight) {
     return getMcpEnabledMapInFlight
@@ -1889,6 +2055,7 @@ export async function getMcpEnabledMap(): Promise<Record<string, boolean>> {
           result[m[1].trim()] = isEnabledStatus(m[2].trim())
         }
       }
+      mcpEnabledCache = { data: result, ts: Date.now(), ws }
       return result
     } catch {
       return {}
@@ -1898,6 +2065,10 @@ export async function getMcpEnabledMap(): Promise<Record<string, boolean>> {
   })()
   getMcpEnabledMapInFlight = p
   return p
+}
+
+export function invalidateMcpEnabledCache(): void {
+  mcpEnabledCache = null
 }
 
 export async function toggleMcpServer(serverName: string, enabled: boolean): Promise<{ ok: boolean; output: string }> {
@@ -1913,6 +2084,7 @@ export async function toggleMcpServer(serverName: string, enabled: boolean): Pro
     const r = await spawnAsync(["mcp", sub, serverName], config.workspaceDir, env)
     const out = (r.stdout + r.stderr).replace(ANSI_RE, "").replace(/\r/g, "").trim()
     broadcastLog(`[MCP ${sub}] ${serverName}: ${out}`, r.code === 0 ? "INFO" : "WARN")
+    invalidateMcpEnabledCache()
     return { ok: r.code === 0, output: out }
   } catch (e: unknown) {
     return { ok: false, output: e instanceof Error ? e.message : String(e) }
@@ -2204,6 +2376,10 @@ export async function saveAppConfigFromRenderer(partial: Partial<AppConfig>): Pr
 
   const workspaceDirChanged =
     partial.workspaceDir !== undefined && nextW !== oldW
+
+  if (workspaceDirChanged) {
+    invalidateMcpEnabledCache()
+  }
 
   saveConfig(partial)
   return {
