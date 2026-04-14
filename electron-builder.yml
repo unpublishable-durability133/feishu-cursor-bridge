@@ -26,14 +26,6 @@ extraResources:
       - "*.map"
   - from: node_modules/node-cron
     to: daemon/node_modules/node-cron
-  - from: lite/dist/
-    to: lite/dist/
-    filter:
-      - "*.js"
-      - "*.js.map"
-      - "*.d.ts"
-  - from: lite/node_modules/
-    to: lite/node_modules/
   - from: resources/icon.png
     to: icon.png
 

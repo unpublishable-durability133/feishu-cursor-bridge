@@ -64,10 +64,17 @@ function installWindowCloseHandler(win: BrowserWindow): void {
   })
 }
 
+function resolveIcon(): string {
+  const dir = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), "resources")
+  if (process.platform === "win32") {
+    const ico = path.join(dir, "icon.ico")
+    if (fs.existsSync(ico)) return ico
+  }
+  return path.join(dir, "icon.png")
+}
+
 function createWindow(): void {
-  const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, "icon.png")
-    : path.join(app.getAppPath(), "resources", "icon.png")
+  const iconPath = resolveIcon()
 
   mainWindow = new BrowserWindow({
     width: 900,
