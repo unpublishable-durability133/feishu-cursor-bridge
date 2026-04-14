@@ -36,4 +36,3 @@ module.exports = async function afterPack(context) {
     fs.writeFileSync(targetPath, CONTENT, "utf8")
   }
 }
-

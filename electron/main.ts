@@ -84,6 +84,7 @@ function createWindow(): void {
     title: "Feishu Cursor Bridge",
     icon: iconPath,
     autoHideMenuBar: true,
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -97,6 +98,9 @@ function createWindow(): void {
   })
 
   installWindowCloseHandler(mainWindow)
+
+  mainWindow.on("maximize", () => mainWindow?.webContents.send("window:maximized-change", true))
+  mainWindow.on("unmaximize", () => mainWindow?.webContents.send("window:maximized-change", false))
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -115,6 +119,14 @@ function createWindow(): void {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle("window:minimize", () => mainWindow?.minimize())
+  ipcMain.handle("window:maximize", () => {
+    if (mainWindow?.isMaximized()) mainWindow.unmaximize()
+    else mainWindow?.maximize()
+  })
+  ipcMain.handle("window:close", () => mainWindow?.close())
+  ipcMain.handle("window:is-maximized", () => mainWindow?.isMaximized() ?? false)
+
   ipcMain.handle("config:get", () => getConfig())
   ipcMain.handle("config:save", (_, config) => saveAppConfigFromRenderer(config))
 

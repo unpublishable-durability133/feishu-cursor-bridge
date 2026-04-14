@@ -11,11 +11,12 @@ import {
   Clock,
   Loader2,
   Trash2,
-  Activity,
   Download,
   LogIn,
   AlertTriangle,
 } from "lucide-react"
+import logoUrl from "../assets/logo.png"
+import TitleBar from "../components/TitleBar"
 
 interface Props {
   onSettings: () => void
@@ -250,34 +251,35 @@ export default function Dashboard({ onSettings }: Props) {
 
   return (
     <div className="flex h-screen flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-800 px-6 py-4">
-        <div className="flex items-center gap-3">
-          <Activity size={22} className="text-blue-400" />
-          <h1 className="text-lg font-semibold">Feishu Cursor Bridge</h1>
-          {status.version && (
-            <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
-              v{status.version}
-            </span>
-          )}
+      <TitleBar>
+        <div className="flex flex-1 items-center justify-between">
+          <div className="flex items-center gap-3">
+            <img src={logoUrl} alt="logo" className="h-6 w-6" />
+            <h1 className="text-lg font-semibold">Feishu Cursor Bridge</h1>
+            {status.version && (
+              <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
+                v{status.version}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+            <button
+              onClick={handleRefresh}
+              className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-800 hover:text-white"
+              title="刷新状态"
+            >
+              <RefreshCw size={16} />
+            </button>
+            <button
+              onClick={onSettings}
+              className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-800 hover:text-white"
+              title="设置"
+            >
+              <Settings size={16} />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleRefresh}
-            className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-800 hover:text-white"
-            title="刷新状态"
-          >
-            <RefreshCw size={16} />
-          </button>
-          <button
-            onClick={onSettings}
-            className="rounded-lg p-2 text-gray-400 transition hover:bg-gray-800 hover:text-white"
-            title="设置"
-          >
-            <Settings size={16} />
-          </button>
-        </div>
-      </div>
+      </TitleBar>
 
       {/* Status cards */}
       <div className="grid grid-cols-4 gap-3 px-6 py-4">

@@ -18,15 +18,7 @@
   },
   "type": "module",
   "main": "./out/main/index.js",
-  "bin": {
-    "lark-bridge-mcp": "dist/index.js",
-    "lark-bridge-daemon": "dist/daemon-entry.js"
-  },
-  "files": [
-    "dist/**/*.js",
-    "dist/**/*.js.map",
-    "dist/**/*.d.ts"
-  ],
+  "private": true,
   "scripts": {
     "build:mcp": "tsc",
     "build:bundle": "node scripts/bundle-daemon.cjs",
@@ -39,7 +31,8 @@
     "dist:mac": "npm run build && electron-builder --mac",
     "pack:win": "npm run build && electron-builder --win --dir",
     "pack:mac": "npm run build && electron-builder --mac --dir",
-    "pack:linux": "npm run build && electron-builder --linux --dir"
+    "pack:linux": "npm run build && electron-builder --linux --dir",
+    "publish:npm": "npm run build:mcp && node scripts/publish-npm.cjs"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.59.0",

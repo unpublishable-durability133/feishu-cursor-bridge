@@ -28,15 +28,17 @@ extraResources:
     to: daemon/node_modules/node-cron
   - from: resources/icon.png
     to: icon.png
+  - from: resources/icon.ico
+    to: icon.ico
 
 win:
-  icon: resources/icon.png
+  icon: resources/icon.ico
   artifactName: feishu-cursor-bridge-setup-${version}.${ext}
   target:
     - target: nsis
       arch:
         - x64
-  signAndEditExecutable: false
+  signAndEditExecutable: true
 
 nsis:
   oneClick: false

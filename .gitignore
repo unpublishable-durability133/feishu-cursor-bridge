@@ -6,6 +6,8 @@ dist/
 dist-bundle/
 out/
 release/
+npm/dist/
+npm/README.md
 
 # Package archives
 *.tgz

@@ -202,6 +202,16 @@ const api = {
   },
   respondAppModal: (requestId: string, response: number): Promise<void> =>
     ipcRenderer.invoke("app:modal-result", { requestId, response }),
+
+  windowMinimize: (): Promise<void> => ipcRenderer.invoke("window:minimize"),
+  windowMaximize: (): Promise<void> => ipcRenderer.invoke("window:maximize"),
+  windowClose: (): Promise<void> => ipcRenderer.invoke("window:close"),
+  windowIsMaximized: (): Promise<boolean> => ipcRenderer.invoke("window:is-maximized"),
+  onWindowMaximizedChange: (cb: (maximized: boolean) => void) => {
+    const handler = (_: unknown, maximized: boolean) => cb(maximized)
+    ipcRenderer.on("window:maximized-change", handler)
+    return () => ipcRenderer.removeListener("window:maximized-change", handler)
+  },
 }
 
 contextBridge.exposeInMainWorld("electronAPI", api)

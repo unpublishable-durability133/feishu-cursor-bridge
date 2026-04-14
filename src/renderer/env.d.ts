@@ -1,3 +1,8 @@
+declare module "*.png" {
+  const src: string
+  export default src
+}
+
 interface AppConfig {
   larkAppId: string
   larkAppSecret: string

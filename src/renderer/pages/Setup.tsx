@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import SearchableSelect from "../components/SearchableSelect"
 import WorkspaceDaemonModal from "../components/WorkspaceDaemonModal"
+import TitleBar from "../components/TitleBar"
 
 interface Props {
   onComplete: () => void
@@ -172,6 +173,9 @@ export default function Setup({ onComplete }: Props) {
 
   return (
     <div className="flex h-screen flex-col">
+      <TitleBar>
+        <h1 className="text-lg font-semibold">初始设置</h1>
+      </TitleBar>
       {/* Progress bar */}
       <div className="flex items-center gap-0 border-b border-gray-800 px-8 py-5">
         {stepLabels.map((label, i) => {

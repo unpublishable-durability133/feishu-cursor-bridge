@@ -26,6 +26,7 @@ import {
 } from "lucide-react"
 import SearchableSelect from "../components/SearchableSelect"
 import WorkspaceDaemonModal from "../components/WorkspaceDaemonModal"
+import TitleBar from "../components/TitleBar"
 
 interface Props { onBack: () => void }
 
@@ -439,12 +440,14 @@ export default function Settings({ onBack }: Props) {
 
   return (
     <div className="flex h-screen flex-col">
-      <div className="flex items-center gap-3 border-b border-gray-800 px-6 py-3">
-        <button onClick={onBack} className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-800 hover:text-white"><ArrowLeft size={18} /></button>
-        <h1 className="text-lg font-semibold">设置</h1>
-        <div className="flex-1" />
-        {saved && <span className="flex items-center gap-1 text-xs text-green-400"><CheckCircle2 size={14} />已保存</span>}
-      </div>
+      <TitleBar>
+        <div className="flex flex-1 items-center gap-3">
+          <button onClick={onBack} className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-800 hover:text-white" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}><ArrowLeft size={18} /></button>
+          <h1 className="text-lg font-semibold">设置</h1>
+          <div className="flex-1" />
+          {saved && <span className="flex items-center gap-1 text-xs text-green-400"><CheckCircle2 size={14} />已保存</span>}
+        </div>
+      </TitleBar>
 
       <div className="flex flex-1 overflow-hidden">
         <nav className="w-36 shrink-0 border-r border-gray-800 py-3">

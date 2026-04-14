@@ -63,7 +63,7 @@ const sender = new LarkSender({ client: larkClient, receiveId: RECEIVE_ID, recei
 
 // ── 消息队列 ─────────────────────────────────────────────
 
-const COMMANDS = ["/stop", "/status", "/list", "/task", "/model", "/clean", "/reset", "/restart", "/help"];
+const COMMANDS = ["/stop", "/status", "/list", "/task", "/model", "/mcp", "/clean", "/reset", "/restart", "/help"];
 
 function isCommand(text: string): boolean {
   const trimmed = text.trim().toLowerCase();
