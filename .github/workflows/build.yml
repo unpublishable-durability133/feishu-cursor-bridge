@@ -39,16 +39,8 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install root dependencies
+      - name: Install dependencies
         run: npm ci
-
-      - name: Install lite dependencies
-        run: npm ci
-        working-directory: lite
-
-      - name: Build lite
-        run: npm run build
-        working-directory: lite
 
       - name: Build app
         run: npm run build
