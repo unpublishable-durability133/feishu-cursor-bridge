@@ -162,6 +162,8 @@ const api = {
   validateCron: (expression: string): Promise<boolean> => ipcRenderer.invoke("scheduled-tasks:validate-cron", expression),
   previewCronNextRuns: (expression: string): Promise<{ ok: true; runs: string[] } | { ok: false; error: string }> =>
     ipcRenderer.invoke("scheduled-tasks:preview-cron", expression),
+  triggerScheduledTask: (taskId: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke("scheduled-tasks:trigger", taskId),
   getOAuthMcps: (): Promise<McpAuthInfo[]> => ipcRenderer.invoke("mcp:list-oauth"),
   getMcpServers: (): Promise<McpServerEntry[]> => ipcRenderer.invoke("mcp:list-all"),
   saveMcpServer: (name: string, entry: Record<string, unknown>, source: "global" | "project"): Promise<{ ok: boolean }> => ipcRenderer.invoke("mcp:save", name, entry, source),

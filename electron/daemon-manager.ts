@@ -1450,6 +1450,7 @@ const TASK_SUBCMD_HELP =
   "🔹 /task 显示本说明\n" +
   "🔹 /task ls 列出所有任务\n" +
   "🔹 /task info <序号> 查看详情\n" +
+  "🔹 /task run <序号> 立即触发一次\n" +
   "🔹 /task stop <序号> 停止任务\n" +
   "🔹 /task start <序号> 启动任务\n" +
   "🔹 /task delete <序号> 删除任务\n" +
@@ -1633,6 +1634,28 @@ async function handleFeishuTaskCommand(port: number, messageId: string, raw: str
       t.content,
     ].join("\n")
     await reportCommandResult(port, messageId, true, body)
+    return
+  }
+
+  if (sub === "run") {
+    const idx = parseTaskOneBasedIndex(parts[2])
+    if (idx === null) {
+      await reportCommandResult(port, messageId, false, "💡 用法：/task run <序号>（数字见 /task ls 的 #）")
+      return
+    }
+    if (idx > tasks.length) {
+      await reportCommandResult(port, messageId, false, `😅 序号 ${idx} 对应的任务不存在哦（共 ${tasks.length} 条）`)
+      return
+    }
+    const t = tasks[idx - 1]
+    const nowStr = new Date().toLocaleString("zh-CN")
+    const content = `[定时任务: ${t.name}] (手动触发: ${nowStr})\n\n${t.content}`
+    try {
+      await httpPost(`http://127.0.0.1:${port}/enqueue`, { content })
+      await reportCommandResult(port, messageId, true, `🚀 已手动触发任务 #${idx} ${t.name}`)
+    } catch (e: unknown) {
+      await reportCommandResult(port, messageId, false, `❌ 触发失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
     return
   }
 
@@ -2525,6 +2548,22 @@ export function initDaemonManager(): void {
   })
   ipcMain.handle("scheduled-tasks:preview-cron", (_, expression: string) => {
     return previewCronNextRuns(expression)
+  })
+
+  ipcMain.handle("scheduled-tasks:trigger", async (_, taskId: string) => {
+    const tasks = readTasksFromFile()
+    const task = tasks.find((t) => t.id === taskId)
+    if (!task) return { ok: false, error: "任务不存在" }
+    const lock = readLockFile()
+    if (!lock?.port) return { ok: false, error: "守护进程未运行" }
+    const nowStr = new Date().toLocaleString("zh-CN")
+    const content = `[定时任务: ${task.name}] (手动触发: ${nowStr})\n\n${task.content}`
+    try {
+      await httpPost(`http://127.0.0.1:${lock.port}/enqueue`, { content })
+      return { ok: true }
+    } catch (e: unknown) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   getDaemonStatus().then((status) => {

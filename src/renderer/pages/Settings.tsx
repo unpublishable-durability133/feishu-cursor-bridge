@@ -23,6 +23,7 @@ import {
   Sparkles,
   Bot,
   Download,
+  Play,
 } from "lucide-react"
 import SearchableSelect from "../components/SearchableSelect"
 import WorkspaceDaemonModal from "../components/WorkspaceDaemonModal"
@@ -425,6 +426,9 @@ export default function Settings({ onBack }: Props) {
     const updated = tasks.map((t) => t.id === id ? { ...t, enabled: !t.enabled } : t)
     await window.electronAPI.saveScheduledTasks(updated); refreshTasks()
   }
+  const handleTaskTrigger = async (id: string) => {
+    await window.electronAPI.triggerScheduledTask(id)
+  }
   const handleTaskSave = async () => {
     if (!taskEditing || !taskEditing.name.trim() || !taskEditing.cron.trim()) return
     const valid = await window.electronAPI.validateCron(taskEditing.cron.trim())
@@ -695,6 +699,7 @@ export default function Settings({ onBack }: Props) {
                         <p className="truncate text-xs text-gray-500">{t.content.slice(0, 80)}{t.content.length > 80 ? "..." : ""}</p>
                       </div>
                       <div className="ml-3 flex shrink-0 items-center gap-2">
+                        <button onClick={() => handleTaskTrigger(t.id)} title="立即执行" className="rounded p-1 text-gray-500 transition hover:bg-blue-600/20 hover:text-blue-400"><Play size={13} /></button>
                         <button onClick={() => handleTaskToggle(t.id)} className={`rounded px-2 py-0.5 text-xs transition ${t.enabled ? "text-green-400 hover:bg-green-600/20" : "text-gray-500 hover:bg-gray-800"}`}>
                           {t.enabled ? "启用" : "禁用"}
                         </button>
