@@ -40,7 +40,7 @@ interface McpEditForm {
 }
 interface RuleFile { name: string; content: string }
 interface SkillFile { name: string; content: string }
-interface TaskItem { id: string; name: string; cron: string; content: string; enabled: boolean }
+interface TaskItem { id: string; name: string; cron: string; content: string; enabled: boolean; independent?: boolean }
 
 const MCP_TEMPLATE = JSON.stringify({
   "my-mcp-server": { command: "npx", args: ["-y", "@some/mcp-server"] },
@@ -104,8 +104,8 @@ export default function Settings({ onBack }: Props) {
   const [cronPreviewErr, setCronPreviewErr] = useState<string | null>(null)
   const [cronPreviewLoading, setCronPreviewLoading] = useState(false)
   const cronPreviewReq = useRef(0)
-  /** 用于区分「同一条任务里只改 cron」与「切换到另一条任务」，切换任务时立即清空预览避免串台 */
   const cronPreviewTaskIdRef = useRef("")
+  const [taskStatuses, setTaskStatuses] = useState<Record<string, { running: boolean; pid?: number; startedAt?: number }>>({})
 
   const loaded = useRef(false)
   const initialLoadDone = useRef(false)
@@ -164,9 +164,12 @@ export default function Settings({ onBack }: Props) {
       loaded.current = true
     })
     refreshMcpServers(); refreshRules(); refreshSkills(); refreshTasks()
-    return window.electronAPI.onMcpLoginComplete(({ serverName, ok }) => {
+    window.electronAPI.getScheduledTaskStatus().then(setTaskStatuses)
+    const unsub1 = window.electronAPI.onMcpLoginComplete(({ serverName, ok }) => {
       if (ok) setMcpServers((prev) => prev.map((s) => s.name === serverName ? { ...s, authenticated: true } : s))
     })
+    const unsub2 = window.electronAPI.onScheduledTaskStatus(setTaskStatuses)
+    return () => { unsub1(); unsub2() }
   }, [refreshMcpServers, refreshRules, refreshSkills, refreshTasks])
 
   const autoSave = useCallback(() => {
@@ -414,7 +417,7 @@ export default function Settings({ onBack }: Props) {
 
   // ── Tasks ──
   const openTaskAdd = () => {
-    setTaskEditing({ id: crypto.randomUUID(), name: "", cron: "", content: "", enabled: true })
+    setTaskEditing({ id: crypto.randomUUID(), name: "", cron: "", content: "", enabled: true, independent: true })
     setTaskCronValid(true)
   }
   const openTaskEdit = (t: TaskItem) => { setTaskEditing({ ...t }); setTaskCronValid(true) }
@@ -689,12 +692,17 @@ export default function Settings({ onBack }: Props) {
                   <button onClick={openTaskAdd} className="flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-blue-500"><Plus size={12} />新增</button>
                 </div>
                 <div className="space-y-2">
-                  {tasks.map((t) => (
-                    <div key={t.id} className="flex items-center justify-between rounded-lg border border-gray-700 px-4 py-3">
+                  {tasks.map((t) => {
+                    const status = taskStatuses[t.id]
+                    const isRunning = !!status?.running
+                    return (
+                    <div key={t.id} className={`flex items-center justify-between rounded-lg border px-4 py-3 ${isRunning ? "border-green-700/50 bg-green-950/20" : "border-gray-700"}`}>
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <p className={`truncate text-sm font-medium ${t.enabled ? "" : "text-gray-600 line-through"}`}>{t.name}</p>
                           <span className="shrink-0 rounded bg-gray-800 px-1.5 py-0.5 font-mono text-[10px] text-gray-500">{t.cron}</span>
+                          {t.independent !== false && <span className="shrink-0 rounded bg-indigo-900/40 px-1.5 py-0.5 text-[10px] text-indigo-400">独立</span>}
+                          {isRunning && <span className="inline-flex items-center gap-1 shrink-0 rounded bg-green-900/40 px-1.5 py-0.5 text-[10px] text-green-400"><span className="inline-block h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />运行中</span>}
                         </div>
                         <p className="truncate text-xs text-gray-500">{t.content.slice(0, 80)}{t.content.length > 80 ? "..." : ""}</p>
                       </div>
@@ -707,7 +715,8 @@ export default function Settings({ onBack }: Props) {
                         <button onClick={() => handleTaskDelete(t.id)} className="rounded p-1 text-gray-500 transition hover:bg-gray-800 hover:text-red-400"><Trash2 size={13} /></button>
                       </div>
                     </div>
-                  ))}
+                    )
+                  })}
                   {tasks.length === 0 && <p className="py-4 text-center text-xs text-gray-600">暂无定时任务</p>}
                 </div>
               </section>
@@ -865,10 +874,11 @@ export default function Settings({ onBack }: Props) {
                 </div>
               </div>
               <div><label className="mb-1 block text-xs text-gray-500">消息内容</label><textarea value={taskEditing.content} onChange={(e) => setTaskEditing({ ...taskEditing, content: e.target.value })} rows={6} className={inputCls + " font-mono text-xs leading-relaxed"} placeholder="要发送给 Agent 的消息..." /></div>
-              <div className="flex items-center gap-2">
-                <input type="checkbox" checked={taskEditing.enabled} onChange={(e) => setTaskEditing({ ...taskEditing, enabled: e.target.checked })} className="rounded border-gray-600" />
-                <label className="text-xs text-gray-400">启用</label>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 text-xs text-gray-400"><input type="checkbox" checked={taskEditing.enabled} onChange={(e) => setTaskEditing({ ...taskEditing, enabled: e.target.checked })} className="rounded border-gray-600" />启用</label>
+                <label className="flex items-center gap-2 text-xs text-gray-400"><input type="checkbox" checked={taskEditing.independent !== false} onChange={(e) => setTaskEditing({ ...taskEditing, independent: e.target.checked })} className="rounded border-gray-600" />独立运行</label>
               </div>
+              <p className="text-[10px] text-gray-600">独立运行：触发时直接启动新 Agent 会话，不进入消息队列</p>
             </div>
             <div className="flex justify-end gap-2 border-t border-gray-800 px-6 py-4">
               <button onClick={() => setTaskEditing(null)} className="rounded-md px-4 py-1.5 text-xs text-gray-400 transition hover:bg-gray-800 hover:text-white">取消</button>

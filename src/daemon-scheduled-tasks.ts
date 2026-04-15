@@ -18,6 +18,7 @@ interface ScheduledTask {
   cron: string;
   content: string;
   enabled?: boolean;
+  independent?: boolean;
 }
 
 let scheduledTasksSnapshot: ScheduledTask[] = [];
@@ -109,8 +110,13 @@ function stopWatchdog(): void {
   }
   lastWatchdogMs = 0;
 }
+interface SchedulerCallbacks {
+  enqueue: (content: string) => void;
+  launchIndependent?: (taskId: string, taskName: string, content: string) => void;
+}
+
 /** 按时间窗口扫描应触发点；仅接受距今不超过 CATCHUP_MAX_MS 的槽位（过时即丢弃，避免睡眠唤醒后执行已失效任务）。 */
-function runWatchdogTick(enqueue: (content: string) => void): void {
+function runWatchdogTick(cb: SchedulerCallbacks): void {
   if (scheduledTasksSnapshot.length === 0) {
     return;
   }
@@ -145,13 +151,17 @@ function runWatchdogTick(enqueue: (content: string) => void): void {
       }
       const nowStr = fireAt.toLocaleString("zh-CN");
       const message = `[定时任务: ${task.name}] (触发时间: ${nowStr})\n\n${task.content}`;
-      log(`触发: ${task.name}`);
-      enqueue(message);
+      log(`触发: ${task.name}${task.independent ? " [独立运行]" : ""}`);
+      if (task.independent && cb.launchIndependent) {
+        cb.launchIndependent(task.id, task.name, message);
+      } else {
+        cb.enqueue(message);
+      }
     }
   }
 }
 
-function reloadTasks(enqueue: (content: string) => void): void {
+function reloadTasks(cb: SchedulerCallbacks): void {
   stopWatchdog();
   scheduledTasksSnapshot = [];
   const tasks = readTasksFromFile();
@@ -167,7 +177,7 @@ function reloadTasks(enqueue: (content: string) => void): void {
       continue;
     }
     scheduledTasksSnapshot.push(task);
-    log(`已注册: ${task.name} (${task.cron})`);
+    log(`已注册: ${task.name} (${task.cron})${task.independent ? " [独立]" : ""}`);
   }
   if (scheduledTasksSnapshot.length === 0) {
     log("无有效定时任务（表达式均无效）");
@@ -175,9 +185,9 @@ function reloadTasks(enqueue: (content: string) => void): void {
   }
   lastWatchdogMs = 0;
   watchdogTimer = setInterval(() => {
-    runWatchdogTick(enqueue);
+    runWatchdogTick(cb);
   }, WATCHDOG_MS);
-  runWatchdogTick(enqueue);
+  runWatchdogTick(cb);
 }
 
 function stopFileWatcher(): void {
@@ -187,7 +197,7 @@ function stopFileWatcher(): void {
   }
 }
 
-function startFileWatcher(enqueue: (content: string) => void): void {
+function startFileWatcher(cb: SchedulerCallbacks): void {
   stopFileWatcher();
   if (!fs.existsSync(TASKS_DIR)) {
     try {
@@ -205,7 +215,7 @@ function startFileWatcher(enqueue: (content: string) => void): void {
       }
       debounceTimer = setTimeout(() => {
         log("检测到定时任务配置文件变化，重新加载...");
-        reloadTasks(enqueue);
+        reloadTasks(cb);
       }, 500);
     });
     fileWatcher.on("error", () => { /* ignore */ });
@@ -214,9 +224,10 @@ function startFileWatcher(enqueue: (content: string) => void): void {
   }
 }
 
-export function startDaemonScheduledTasks(enqueue: (content: string) => void): void {
-  reloadTasks(enqueue);
-  startFileWatcher(enqueue);
+export function startDaemonScheduledTasks(enqueue: (content: string) => void, launchIndependent?: (taskId: string, taskName: string, content: string) => void): void {
+  const cb: SchedulerCallbacks = { enqueue, launchIndependent };
+  reloadTasks(cb);
+  startFileWatcher(cb);
   log(`调度器已启动 (${scheduledTasksSnapshot.length} 个活跃任务，每 ${WATCHDOG_MS / 1000}s 时钟扫描)`);
 }
 

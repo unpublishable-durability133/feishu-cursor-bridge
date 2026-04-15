@@ -48,6 +48,7 @@ export interface ScheduledTask {
   cron: string
   content: string
   enabled: boolean
+  independent?: boolean
 }
 
 export interface InjectResult {
@@ -164,6 +165,13 @@ const api = {
     ipcRenderer.invoke("scheduled-tasks:preview-cron", expression),
   triggerScheduledTask: (taskId: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke("scheduled-tasks:trigger", taskId),
+  getScheduledTaskStatus: (): Promise<Record<string, { running: boolean; pid?: number; startedAt?: number }>> =>
+    ipcRenderer.invoke("scheduled-tasks:get-status"),
+  onScheduledTaskStatus: (cb: (statuses: Record<string, { running: boolean; pid?: number; startedAt?: number }>) => void) => {
+    const handler = (_: unknown, statuses: Record<string, { running: boolean; pid?: number; startedAt?: number }>) => cb(statuses)
+    ipcRenderer.on("scheduled-tasks:status", handler)
+    return () => ipcRenderer.removeListener("scheduled-tasks:status", handler)
+  },
   getOAuthMcps: (): Promise<McpAuthInfo[]> => ipcRenderer.invoke("mcp:list-oauth"),
   getMcpServers: (): Promise<McpServerEntry[]> => ipcRenderer.invoke("mcp:list-all"),
   saveMcpServer: (name: string, entry: Record<string, unknown>, source: "global" | "project"): Promise<{ ok: boolean }> => ipcRenderer.invoke("mcp:save", name, entry, source),

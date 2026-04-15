@@ -25,6 +25,7 @@ interface ScheduledTask {
   cron: string
   content: string
   enabled: boolean
+  independent?: boolean
 }
 
 interface CliLoginStatus {
@@ -127,6 +128,8 @@ interface ElectronAPI {
   validateCron(expression: string): Promise<boolean>
   previewCronNextRuns(expression: string): Promise<{ ok: true; runs: string[] } | { ok: false; error: string }>
   triggerScheduledTask(taskId: string): Promise<{ ok: boolean; error?: string }>
+  getScheduledTaskStatus(): Promise<Record<string, { running: boolean; pid?: number; startedAt?: number }>>
+  onScheduledTaskStatus(cb: (statuses: Record<string, { running: boolean; pid?: number; startedAt?: number }>) => void): () => void
   getOAuthMcps(): Promise<{ name: string; url: string; authenticated: boolean }[]>
   getMcpServers(): Promise<McpServerEntry[]>
   saveMcpServer(name: string, entry: Record<string, unknown>, source: "global" | "project"): Promise<{ ok: boolean }>

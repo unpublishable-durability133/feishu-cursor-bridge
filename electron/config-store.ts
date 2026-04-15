@@ -6,6 +6,7 @@ export interface ScheduledTask {
   cron: string
   content: string
   enabled: boolean
+  independent?: boolean
 }
 
 export interface AppConfig {

@@ -489,7 +489,13 @@ export async function daemonMain(): Promise<void> {
   writeLockFile(daemonPort);
 
   setDaemonSchedulerLogger((msg) => { log("INFO", msg); });
-  startDaemonScheduledTasks((content) => { pushMessage(content); });
+  startDaemonScheduledTasks(
+    (content) => { pushMessage(content); },
+    (taskId, taskName, content) => {
+      const payload = JSON.stringify({ taskId, taskName, content });
+      process.stdout.write(`__IND_LAUNCH__:${payload}\n`);
+    },
+  );
 
   log("INFO", `守护进程就绪 ✓ port=${daemonPort}`);
 }

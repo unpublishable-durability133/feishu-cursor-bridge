@@ -354,6 +354,13 @@ export async function startDaemon(): Promise<{ ok: boolean; error?: string }> {
       for (const raw of parts) {
         const line = raw.trim()
         if (!line || line.startsWith("[info]:")) continue
+        if (line.startsWith("__IND_LAUNCH__:")) {
+          try {
+            const payload = JSON.parse(line.slice("__IND_LAUNCH__:".length))
+            launchIndependentAgent(payload.taskId, payload.taskName, payload.content)
+          } catch { /* ignore malformed */ }
+          continue
+        }
         pushUiLog("LarkDaemon", "INFO", line)
       }
     })
@@ -927,6 +934,86 @@ let agentIndexPath = ""
 let lastAgentLaunchTime = 0
 const AGENT_COOLDOWN_MS = 15_000
 
+// ── 独立运行 Agent 管理 ──────────────────────────────────
+
+interface IndependentAgent {
+  taskId: string
+  taskName: string
+  pid: number
+  child: ChildProcess
+  startedAt: number
+}
+
+const independentAgents = new Map<string, IndependentAgent>()
+
+function broadcastIndependentTaskStatus(): void {
+  const statuses: Record<string, { running: boolean; pid?: number; startedAt?: number }> = {}
+  for (const [taskId, agent] of independentAgents) {
+    statuses[taskId] = { running: true, pid: agent.pid, startedAt: agent.startedAt }
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("scheduled-tasks:status", statuses)
+  }
+}
+
+export function launchIndependentAgent(taskId: string, taskName: string, message: string): { ok: boolean; error?: string } {
+  const existing = independentAgents.get(taskId)
+  if (existing && !existing.child.killed && existing.child.exitCode === null) {
+    broadcastLog(`[独立任务] ${taskName} 上次运行仍在进行中, pid=${existing.pid}，跳过`)
+    return { ok: false, error: "上次运行仍在进行中" }
+  }
+
+  const config = getConfig()
+  if (!config.workspaceDir) return { ok: false, error: "工作目录未配置" }
+  if (!resolveAgentBinary()) return { ok: false, error: "Cursor CLI 未安装" }
+
+  const prompt = `请执行该定时任务,并通过飞书告知用户结果,执行完成后结束会话：\n\n${message}`
+  const args = buildAgentLaunchArgs(config, prompt, false)
+
+  const spawnEnv: Record<string, string> = { ...process.env as Record<string, string>, CURSOR_INVOKED_AS: "agent" }
+  delete spawnEnv.NODE_USE_ENV_PROXY
+  applyProxyEnv(spawnEnv, config)
+
+  try {
+    let child: ChildProcess
+    const ws = config.workspaceDir?.trim() || undefined
+    logCursorAgentInvocation("launch-independent", args, ws)
+    if (agentNodePath && agentIndexPath) {
+      child = spawn(agentNodePath, [agentIndexPath, ...args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: spawnEnv })
+    } else {
+      child = spawn("agent", args, { shell: process.platform === "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: spawnEnv })
+    }
+
+    const agentOutBuf = { current: "" }
+    const agentErrBuf = { current: "" }
+    child.stdout?.on("data", (d: Buffer) => flushAgentStreamChunk(agentOutBuf, d.toString(), "stdout"))
+    child.stderr?.on("data", (d: Buffer) => flushAgentStreamChunk(agentErrBuf, d.toString(), "stderr"))
+
+    child.on("close", (code, signal) => {
+      if (agentOutBuf.current.trim()) { pushUiLog("IndAgent", "INFO", agentOutBuf.current.trim()); agentOutBuf.current = "" }
+      if (agentErrBuf.current.trim()) { pushUiLog("IndAgent", "WARN", agentErrBuf.current.trim()); agentErrBuf.current = "" }
+      const sig = signal ? ` signal=${signal}` : ""
+      pushUiLog("IndAgent", "INFO", `[${taskName}] 退出 code=${code}${sig}`)
+      independentAgents.delete(taskId)
+      broadcastIndependentTaskStatus()
+    })
+    child.on("error", (e) => {
+      pushUiLog("IndAgent", "ERROR", `[${taskName}] 进程错误: ${e.message}`)
+      independentAgents.delete(taskId)
+      broadcastIndependentTaskStatus()
+    })
+
+    independentAgents.set(taskId, { taskId, taskName, pid: child.pid!, child, startedAt: Date.now() })
+    broadcastLog(`[独立任务] ${taskName} 已启动, pid=${child.pid}`)
+    broadcastIndependentTaskStatus()
+    return { ok: true }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    broadcastLog(`[独立任务] ${taskName} 启动失败: ${msg}`, "ERROR")
+    return { ok: false, error: msg }
+  }
+}
+
 /**
  * 将 Cursor CLI（agent）一次调用的可执行文件、完整参数数组与工作目录写入 UI 日志。
  *
@@ -1270,7 +1357,7 @@ export function launchAgent(initialMessage?: string): { ok: boolean; error?: str
   if (!resolveAgentBinary()) return { ok: false, error: "Cursor CLI 未安装" }
 
   const prompt = initialMessage
-    ? `请遵守飞书工作流规则feishu-cursor-bridge开始工作,以下是用户通过飞书发来的消息：\n\n${initialMessage}`
+    ? `请遵守飞书工作流规则feishu-cursor-bridge开始工作,以下是待处理的消息或定时任务：\n\n${initialMessage}`
     : "请遵守飞书工作流规则feishu-cursor-bridge开始工作,先获取待处理的飞书消息，然后根据消息内容开始工作。"
   const skipContinueOnce = config.agentSkipContinueNextLaunch === true
   const includeContinue = !config.agentNewSession && !skipContinueOnce
@@ -1650,11 +1737,20 @@ async function handleFeishuTaskCommand(port: number, messageId: string, raw: str
     const t = tasks[idx - 1]
     const nowStr = new Date().toLocaleString("zh-CN")
     const content = `[定时任务: ${t.name}] (手动触发: ${nowStr})\n\n${t.content}`
-    try {
-      await httpPost(`http://127.0.0.1:${port}/enqueue`, { content })
-      await reportCommandResult(port, messageId, true, `🚀 已手动触发任务 #${idx} ${t.name}`)
-    } catch (e: unknown) {
-      await reportCommandResult(port, messageId, false, `❌ 触发失败: ${e instanceof Error ? e.message : String(e)}`)
+    if (t.independent !== false) {
+      const result = launchIndependentAgent(t.id, t.name, content)
+      if (result.ok) {
+        await reportCommandResult(port, messageId, true, `🚀 已独立启动任务 #${idx} ${t.name}`)
+      } else {
+        await reportCommandResult(port, messageId, false, `❌ 独立启动失败: ${result.error}`)
+      }
+    } else {
+      try {
+        await httpPost(`http://127.0.0.1:${port}/enqueue`, { content })
+        await reportCommandResult(port, messageId, true, `🚀 已手动触发任务 #${idx} ${t.name}`)
+      } catch (e: unknown) {
+        await reportCommandResult(port, messageId, false, `❌ 触发失败: ${e instanceof Error ? e.message : String(e)}`)
+      }
     }
     return
   }
@@ -2554,16 +2650,27 @@ export function initDaemonManager(): void {
     const tasks = readTasksFromFile()
     const task = tasks.find((t) => t.id === taskId)
     if (!task) return { ok: false, error: "任务不存在" }
-    const lock = readLockFile()
-    if (!lock?.port) return { ok: false, error: "守护进程未运行" }
     const nowStr = new Date().toLocaleString("zh-CN")
     const content = `[定时任务: ${task.name}] (手动触发: ${nowStr})\n\n${task.content}`
+    if (task.independent !== false) {
+      return launchIndependentAgent(task.id, task.name, content)
+    }
+    const lock = readLockFile()
+    if (!lock?.port) return { ok: false, error: "守护进程未运行" }
     try {
       await httpPost(`http://127.0.0.1:${lock.port}/enqueue`, { content })
       return { ok: true }
     } catch (e: unknown) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
+  })
+
+  ipcMain.handle("scheduled-tasks:get-status", () => {
+    const statuses: Record<string, { running: boolean; pid?: number; startedAt?: number }> = {}
+    for (const [taskId, agent] of independentAgents) {
+      statuses[taskId] = { running: true, pid: agent.pid, startedAt: agent.startedAt }
+    }
+    return statuses
   })
 
   getDaemonStatus().then((status) => {
