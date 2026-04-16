@@ -219,7 +219,8 @@ export default function Settings({ onBack }: Props) {
       } else if (r.status === "error") {
         setUpdateMsg(r.message)
       } else if (r.status === "available") {
-        setUpdateMsg(`发现新版本 v${r.latestVersion}，当前 v${r.currentVersion}。`)
+        const notes = r.releaseNotes ? `\n\n更新内容：\n${r.releaseNotes}` : ""
+        setUpdateMsg(`发现新版本 v${r.latestVersion}，当前 v${r.currentVersion}。${notes}`)
       }
     } finally {
       setUpdateBusy(false)

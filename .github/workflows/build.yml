@@ -81,6 +81,12 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: changelog.json
+          sparse-checkout-cone-mode: false
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -89,11 +95,31 @@ jobs:
       - name: Display downloaded files
         run: find artifacts -type f | head -50
 
+      - name: Extract release notes
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BODY=$(python3 -c "
+          import json, sys
+          with open('changelog.json') as f:
+              entries = json.load(f)
+          for e in entries:
+              if e['version'] == '$VERSION':
+                  print('\n'.join(e.get('changes', [])))
+                  sys.exit(0)
+          print('v$VERSION')
+          ")
+          {
+            echo 'body<<RELEASE_EOF'
+            echo "$BODY"
+            echo 'RELEASE_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.body }}
           overwrite_files: true
           files: |
             artifacts/**/feishu-cursor-bridge-setup-*.exe

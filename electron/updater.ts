@@ -45,6 +45,12 @@ export interface LatestRelease {
   htmlUrl: string
 }
 
+interface ChangelogEntry {
+  version: string
+  date: string
+  changes: string[]
+}
+
 export type UpdaterCheckResult =
   | { status: "dev"; currentVersion: string; message: string }
   | { status: "error"; currentVersion: string; message: string }
@@ -55,6 +61,7 @@ export type UpdaterCheckResult =
       latestVersion: string
       htmlUrl: string
       applyHint: string
+      releaseNotes: string
     }
 
 export interface UpdaterApplyResult {
@@ -183,12 +190,12 @@ export function fetchLatestRelease(): Promise<LatestRelease | null> {
               resolve(null)
               return
             }
-            const body = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as {
+            const json = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as {
               tag_name?: string
               html_url?: string
             }
-            const tag = body.tag_name
-            const htmlUrl = body.html_url
+            const tag = json.tag_name
+            const htmlUrl = json.html_url
             if (typeof tag !== "string" || typeof htmlUrl !== "string") {
               resolve(null)
               return
@@ -214,6 +221,55 @@ export function fetchLatestRelease(): Promise<LatestRelease | null> {
   })
 }
 
+function fetchRemoteChangelog(): Promise<ChangelogEntry[]> {
+  const rawUrl = `/${GITHUB_OWNER}/${GITHUB_REPO}/main/changelog.json`
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        hostname: "raw.githubusercontent.com",
+        path: rawUrl,
+        method: "GET",
+        headers: { "User-Agent": "feishu-cursor-bridge-desktop-updater" },
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on("data", (c: Buffer) => chunks.push(c))
+        res.on("end", () => {
+          try {
+            if (res.statusCode !== 200) {
+              resolve([])
+              return
+            }
+            resolve(JSON.parse(Buffer.concat(chunks).toString("utf-8")) as ChangelogEntry[])
+          } catch {
+            resolve([])
+          }
+        })
+      },
+    )
+    req.on("error", () => resolve([]))
+    req.setTimeout(15_000, () => {
+      req.destroy()
+      resolve([])
+    })
+    req.end()
+  })
+}
+
+function buildReleaseNotes(entries: ChangelogEntry[], currentVersion: string): string {
+  const newer = entries.filter((e) => semver.valid(e.version) && semver.gt(e.version, currentVersion))
+  if (newer.length === 0) {
+    return ""
+  }
+  newer.sort((a, b) => semver.rcompare(a.version, b.version))
+  return newer
+    .map((e) => {
+      const header = newer.length > 1 ? `v${e.version}：\n` : ""
+      return header + e.changes.map((c) => `- ${c}`).join("\n")
+    })
+    .join("\n\n")
+}
+
 function getBrewExecutable(): string | null {
   const arm = "/opt/homebrew/bin/brew"
   const intel = "/usr/local/bin/brew"
@@ -226,10 +282,20 @@ function getBrewExecutable(): string | null {
   return null
 }
 
+const BREW_MANUAL_GUIDE = [
+  "手动更新方法（在终端中执行）：",
+  `  brew untap ${HOMEBREW_TAP}`,
+  `  brew tap ${HOMEBREW_TAP}`,
+  `  brew upgrade --cask ${HOMEBREW_CASK}`,
+  "  xattr -cr /Applications/Feishu\\ Cursor\\ Bridge.app",
+  "",
+  `FAQ: https://github.com/${HOMEBREW_TAP}`,
+].join("\n")
+
 async function runBrewUpgrade(): Promise<UpdaterApplyResult> {
   const brew = getBrewExecutable()
   if (!brew) {
-    return { ok: false, error: "未找到 Homebrew（/opt/homebrew 或 /usr/local）" }
+    return { ok: false, error: `未找到 Homebrew（/opt/homebrew 或 /usr/local）\n\n${BREW_MANUAL_GUIDE}` }
   }
   const brewEnv = {
     ...process.env,
@@ -245,25 +311,39 @@ async function runBrewUpgrade(): Promise<UpdaterApplyResult> {
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    return { ok: false, error: `brew 执行失败：${msg}` }
+    return { ok: false, error: `brew 执行失败：${msg}\n\n${BREW_MANUAL_GUIDE}` }
   }
 }
 
+function manualUpdateUrl(version: string): string {
+  return `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/v${version}/feishu-cursor-bridge-setup-${version}.exe`
+}
+
 async function showWinDownloadFallback(reason: unknown): Promise<void> {
-  const url = lastKnownRemote?.htmlUrl
-  const detail =
+  const ver = lastKnownRemote?.version ?? ""
+  const errMsg =
     reason instanceof Error ? reason.message : typeof reason === "string" ? reason : String(reason)
+  const downloadUrl = ver ? manualUpdateUrl(ver) : (lastKnownRemote?.htmlUrl ?? "")
+  const detail = [
+    `错误: ${errMsg}`,
+    "",
+    "可能原因: 安装包托管在 GitHub，直接访问可能被墙。",
+    "",
+    downloadUrl ? "点击「手动下载」可在浏览器中打开安装包下载链接。" : "",
+  ].filter(Boolean).join("\n")
+
+  const buttons = downloadUrl ? ["关闭", "手动下载"] : ["关闭"]
   const r = await showAppModal({
     variant: "warning",
-    title: "下载失败",
-    message: "无法自动下载更新。",
-    detail: url ? "是否在浏览器中打开下载页？" : detail,
-    buttons: url ? ["关闭", "打开下载页"] : ["关闭"],
-    defaultId: url ? 1 : 0,
+    title: "自动更新失败",
+    message: "无法自动下载更新，请尝试手动更新。",
+    detail,
+    buttons,
+    defaultId: downloadUrl ? 1 : 0,
     cancelId: 0,
   })
-  if (r === 1 && url) {
-    await shell.openExternal(url)
+  if (r === 1 && downloadUrl) {
+    await shell.openExternal(downloadUrl)
   }
 }
 
@@ -360,12 +440,18 @@ async function runStartupUpdateCheck(): Promise<void> {
   const cur = app.getVersion()
   const simSuffix = simulate ? devSimulateDetailSuffix() : ""
 
+  const changelog = simulate
+    ? [{ version: DEV_FAKE_LATEST_VERSION, date: "", changes: ["模拟更新内容", "用于开发测试"] }]
+    : await fetchRemoteChangelog()
+  const notes = buildReleaseNotes(changelog, cur)
+  const notesDetail = notes ? `\n\n更新内容：\n${notes}` : ""
+
   if (process.platform === "darwin") {
     const r = await showAppModal({
       variant: "info",
       title: "发现新版本",
       message: `新版本 v${rel.version}，当前 v${cur}。`,
-      detail: "是否现在更新？" + simSuffix,
+      detail: "是否现在更新？" + notesDetail + simSuffix,
       buttons: ["稍后", "立即更新"],
       defaultId: 1,
       cancelId: 0,
@@ -399,7 +485,7 @@ async function runStartupUpdateCheck(): Promise<void> {
       variant: "info",
       title: "发现新版本",
       message: `新版本 v${rel.version}，当前 v${cur}。`,
-      detail: "是否下载并安装？" + simSuffix,
+      detail: "是否下载并安装？" + notesDetail + simSuffix,
       buttons: ["稍后", "下载并安装"],
       defaultId: 1,
       cancelId: 0,
@@ -431,7 +517,7 @@ async function runStartupUpdateCheck(): Promise<void> {
     variant: "info",
     title: "发现新版本",
     message: `新版本 v${rel.version}，当前 v${cur}。`,
-    detail: "是否在浏览器中打开下载页？" + simSuffix,
+    detail: "是否在浏览器中打开下载页？" + notesDetail + simSuffix,
     buttons: ["稍后", "打开下载页"],
     defaultId: 1,
     cancelId: 0,
@@ -462,12 +548,17 @@ export function registerUpdaterIpc(): void {
     if (!app.isPackaged) {
       if (isDevSimulateUpdate()) {
         lastKnownRemote = fakeLatestReleaseForDev()
+        const fakeNotes = buildReleaseNotes(
+          [{ version: DEV_FAKE_LATEST_VERSION, date: "", changes: ["模拟更新内容", "用于开发测试"] }],
+          currentVersion,
+        )
         return {
           status: "available",
           currentVersion,
           latestVersion: DEV_FAKE_LATEST_VERSION,
           htmlUrl: lastKnownRemote.htmlUrl,
           applyHint: applyHintForPlatform(),
+          releaseNotes: fakeNotes,
         }
       }
       return {
@@ -481,17 +572,20 @@ export function registerUpdaterIpc(): void {
       return {
         status: "error",
         currentVersion,
-        message: "检查失败，请稍后重试。",
+        message: "检查失败（可能原因: GitHub 访问受限），请检查网络后重试。",
       }
     }
     lastKnownRemote = rel
     if (semver.gt(rel.version, currentVersion)) {
+      const changelog = await fetchRemoteChangelog()
+      const notes = buildReleaseNotes(changelog, currentVersion)
       return {
         status: "available",
         currentVersion,
         latestVersion: rel.version,
         htmlUrl: rel.htmlUrl,
         applyHint: applyHintForPlatform(),
+        releaseNotes: notes,
       }
     }
     return {
@@ -517,7 +611,10 @@ export function registerUpdaterIpc(): void {
       lastKnownRemote = rel
     }
     if (!rel) {
-      return { ok: false, error: "无法获取远程版本信息" }
+      return {
+        ok: false,
+        error: "无法获取远程版本信息（可能原因: GitHub 访问受限）。\n请检查网络后重试。",
+      }
     }
     if (!semver.gt(rel.version, currentVersion)) {
       return { ok: false, error: "当前已是最新版本" }
@@ -535,7 +632,17 @@ export function registerUpdaterIpc(): void {
       } catch (e) {
         winDownloadRequested = false
         const msg = e instanceof Error ? e.message : String(e)
-        return { ok: false, error: msg }
+        const ver = rel.version
+        const dlUrl = manualUpdateUrl(ver)
+        return {
+          ok: false,
+          error: [
+            msg,
+            "",
+            "可能原因: 安装包托管在 GitHub，直接访问可能被墙。",
+            `手动下载: ${dlUrl}`,
+          ].join("\n"),
+        }
       }
     }
 

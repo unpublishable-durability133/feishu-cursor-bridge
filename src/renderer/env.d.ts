@@ -96,6 +96,7 @@ interface ElectronAPI {
         latestVersion: string
         htmlUrl: string
         applyHint: string
+        releaseNotes: string
       }
   >
   applyAppUpdate(): Promise<{ ok: boolean; error?: string; message?: string }>
