@@ -1247,11 +1247,11 @@ function isAgentRunning(): boolean {
   return agentChild !== null && !agentChild.killed && agentChild.exitCode === null
 }
 
-function buildAgentLaunchArgs(config: AppConfig, prompt: string, includeContinue: boolean): string[] {
+function buildAgentLaunchArgs(config: AppConfig, prompt: string, resumeChatId: string | false): string[] {
   const args = [
     "--print",
     "--force",
-    ...(includeContinue ? ["--continue"] : []),
+    ...(resumeChatId ? ["--resume", resumeChatId] : []),
     "--approve-mcps",
     "--workspace",
     config.workspaceDir,
@@ -1265,12 +1265,12 @@ function buildAgentLaunchArgs(config: AppConfig, prompt: string, includeContinue
 }
 
 /**
- * 启动 agent 子进程；若因无历史会话导致 --continue 失败，自动去掉 --continue 再启动一次。
+ * 启动 agent 子进程；若 --resume 会话不存在，通过 create-chat 重建会话并重试。
  */
 function startAgentChildProcess(
   args: string[],
   spawnEnv: Record<string, string>,
-  canRetryWithoutContinue: boolean,
+  canRetryWithoutResume: boolean,
 ): { ok: boolean; error?: string } {
   let stdoutAcc = ""
   let stderrAcc = ""
@@ -1318,12 +1318,22 @@ function startAgentChildProcess(
         pushUiLog("Agent", "WARN", agentErrBuf.current.trim())
         agentErrBuf.current = ""
       }
-      const hadContinue = args.includes("--continue")
-      if (canRetryWithoutContinue && hadContinue && AGENT_NO_PREVIOUS_CHATS.test(combined)) {
-        broadcastLog("[Agent] 检测到无历史会话，已去掉 --continue 并重新启动", "INFO")
+      const resumeIdx = args.indexOf("--resume")
+      if (canRetryWithoutResume && resumeIdx !== -1 && AGENT_NO_PREVIOUS_CHATS.test(combined)) {
         agentChild = null
-        const argsWithoutContinue = args.filter((a) => a !== "--continue")
-        startAgentChildProcess(argsWithoutContinue, spawnEnv, false)
+        const config = getConfig()
+        const newChatId = createChatId(config, spawnEnv)
+        if (newChatId) {
+          broadcastLog("[Agent] --resume 会话无效，已 create-chat 获取新会话并重试", "INFO")
+          const retryArgs = [...args]
+          retryArgs[resumeIdx + 1] = newChatId
+          startAgentChildProcess(retryArgs, spawnEnv, false)
+        } else {
+          broadcastLog("[Agent] --resume 会话无效且 create-chat 失败，去掉 --resume 启动", "WARN")
+          const cleaned = [...args]
+          cleaned.splice(resumeIdx, 2)
+          startAgentChildProcess(cleaned, spawnEnv, false)
+        }
         return
       }
       const sig = signal ? ` signal=${signal}` : ""
@@ -1344,6 +1354,41 @@ function startAgentChildProcess(
   }
 }
 
+function getMainChatId(config: AppConfig): string {
+  return (config.mainChatIds ?? {})[config.workspaceDir]?.trim() || ""
+}
+
+function setMainChatId(workspaceDir: string, chatId: string) {
+  const config = getConfig()
+  const ids = { ...(config.mainChatIds ?? {}), [workspaceDir]: chatId }
+  if (!chatId) delete ids[workspaceDir]
+  saveConfig({ mainChatIds: ids })
+}
+
+function createChatId(config: AppConfig, spawnEnv: Record<string, string>): string | null {
+  const ws = config.workspaceDir?.trim() || undefined
+  const r = execAgentSync(["create-chat", "--workspace", config.workspaceDir], spawnEnv, { timeoutMs: 15_000, cwd: ws, logLabel: "create-chat" })
+  if (!r.ok) {
+    broadcastLog(`[Agent] create-chat 失败: ${r.error}`, "ERROR")
+    return null
+  }
+  const chatId = r.stdout.trim().split(/\s+/).pop()?.trim()
+  if (!chatId) {
+    broadcastLog(`[Agent] create-chat 返回为空`, "ERROR")
+    return null
+  }
+  setMainChatId(config.workspaceDir, chatId)
+  broadcastLog(`[Agent] 创建主会话: ${chatId}`)
+  return chatId
+}
+
+/**
+ * 确保存在主会话 chatId：有则直接返回，无则调用 `agent create-chat` 创建并持久化。
+ */
+function ensureMainChatId(config: AppConfig, spawnEnv: Record<string, string>): string | null {
+  return getMainChatId(config) || createChatId(config, spawnEnv)
+}
+
 export function launchAgent(initialMessage?: string): { ok: boolean; error?: string } {
   if (isAgentRunning()) return { ok: true }
 
@@ -1353,24 +1398,34 @@ export function launchAgent(initialMessage?: string): { ok: boolean; error?: str
 
   const config = getConfig()
   if (!config.workspaceDir) return { ok: false, error: "工作目录未配置" }
-
   if (!resolveAgentBinary()) return { ok: false, error: "Cursor CLI 未安装" }
 
   const prompt = initialMessage
     ? `请遵守飞书工作流规则feishu-cursor-bridge开始工作,以下是待处理的消息或定时任务：\n\n${initialMessage}`
     : "请遵守飞书工作流规则feishu-cursor-bridge开始工作,先获取待处理的飞书消息，然后根据消息内容开始工作。"
-  const skipContinueOnce = config.agentSkipContinueNextLaunch === true
-  const includeContinue = !config.agentNewSession && !skipContinueOnce
-  const args = buildAgentLaunchArgs(config, prompt, includeContinue)
 
   const spawnEnv: Record<string, string> = { ...process.env as Record<string, string>, CURSOR_INVOKED_AS: "agent" }
   delete spawnEnv.NODE_USE_ENV_PROXY
   applyProxyEnv(spawnEnv, config)
 
-  const started = startAgentChildProcess(args, spawnEnv, includeContinue)
+  const skipContinueOnce = config.agentSkipContinueNextLaunch === true
+  const useNewSession = config.agentNewSession || skipContinueOnce
+
+  let resumeChatId: string | false = false
+  if (useNewSession) {
+    if (getMainChatId(config)) setMainChatId(config.workspaceDir, "")
+  } else {
+    const chatId = ensureMainChatId(config, spawnEnv)
+    if (chatId) resumeChatId = chatId
+  }
+
+  const args = buildAgentLaunchArgs(config, prompt, resumeChatId)
+
+  const started = startAgentChildProcess(args, spawnEnv, !!resumeChatId)
   if (started.ok && skipContinueOnce) {
+    setMainChatId(config.workspaceDir, "")
     saveConfig({ agentSkipContinueNextLaunch: false })
-    broadcastLog("[Agent] 已消费 /reset 标记：本次未使用 --continue，后续恢复设置中的「新会话」偏好", "INFO")
+    broadcastLog("[Agent] 已消费 /reset 标记：本次新会话", "INFO")
   }
   return started
 }
@@ -2107,8 +2162,9 @@ async function checkAndExecutePendingCommands(): Promise<void> {
         case "/reset": {
           stopAgent()
           lastAgentLaunchTime = 0
+          setMainChatId(getConfig().workspaceDir, "")
           saveConfig({ agentSkipContinueNextLaunch: true })
-          broadcastLog("[指令 /reset] 已记录：下次拉起 Agent 不带 --continue；已停止当前 Agent（若曾运行）", "INFO")
+          broadcastLog("[指令 /reset] 已清除主会话并停止 Agent，下次启动将创建新会话", "INFO")
           await reportCommandResult(
             lock.port,
             claimed.messageId,

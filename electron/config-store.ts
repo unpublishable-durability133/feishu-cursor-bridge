@@ -31,6 +31,8 @@ export interface AppConfig {
   closeWindowAction: "ask" | "minimize" | "quit"
   scheduledTasks: ScheduledTask[]
   verifiedMcpServers: string[]
+  /** 主会话 chatId 映射（workspaceDir → chatId），用于 --resume 恢复上下文 */
+  mainChatIds: Record<string, string>
 }
 
 const defaults: AppConfig = {
@@ -50,6 +52,7 @@ const defaults: AppConfig = {
   closeWindowAction: "ask",
   scheduledTasks: [],
   verifiedMcpServers: [],
+  mainChatIds: {},
 }
 
 const store = new Store<AppConfig>({
